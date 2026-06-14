@@ -4,7 +4,7 @@ import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Stars } from '@react-three/drei'
 import { EffectComposer, Bloom } from '@react-three/postprocessing'
 import ReactECharts from 'echarts-for-react'
-import { Upload, Box, Flame, Orbit, Cpu, AlertTriangle, CheckCircle2, XCircle, X, File as FileIcon } from 'lucide-react'
+import { Upload, Box, Flame, Orbit, Cpu, AlertTriangle, CheckCircle2, XCircle, X, File as FileIcon, Play, RotateCcw, Zap } from 'lucide-react'
 import { useStore, type UploadCategory } from '@/store/useStore'
 import type { TaskStatus } from '@/types'
 import { clsx } from 'clsx'
@@ -98,7 +98,7 @@ function UploadZone({
   const inputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { uploadedFiles, uploadFile, clearUploadedFiles } = useStore()
+  const { uploadedFiles, uploadFile, removeUploadedFile, clearUploadedFiles } = useStore()
   const files = uploadedFiles[taskId]?.[category] ?? []
 
   const acceptList = accept
@@ -114,7 +114,7 @@ function UploadZone({
       const ext = nameParts.length > 1 ? nameParts.pop() || '' : ''
       if (!ext || !acceptList.includes(ext)) {
         setError(
-          `不支持的文件格式"${file.name}"。\n支持格式: ${formats}`,
+          `不支持的文件格式"${file.name}"。支持格式: ${formats}`,
         )
         return
       }
@@ -125,7 +125,7 @@ function UploadZone({
       uploadFile(taskId, category, {
         name: file.name,
         size: file.size,
-        type: file.type || `.${ext}`,
+        type: `.${ext.toUpperCase()}`,
         uploadedAt: new Date().toISOString(),
       })
     },
@@ -136,8 +136,12 @@ function UploadZone({
     (e: React.DragEvent) => {
       e.preventDefault()
       setIsDragging(false)
-      const file = e.dataTransfer.files?.[0]
-      if (file) handleFile(file)
+      const fileList = e.dataTransfer.files
+      if (fileList && fileList.length > 0) {
+        for (let i = 0; i < fileList.length; i++) {
+          handleFile(fileList[i])
+        }
+      }
     },
     [handleFile],
   )
@@ -148,8 +152,12 @@ function UploadZone({
 
   const onChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0]
-      if (file) handleFile(file)
+      const fileList = e.target.files
+      if (fileList) {
+        for (let i = 0; i < fileList.length; i++) {
+          handleFile(fileList[i])
+        }
+      }
       e.target.value = ''
     },
     [handleFile],
@@ -165,9 +173,8 @@ function UploadZone({
         setIsDragging(true)
       }}
       onDragLeave={() => setIsDragging(false)}
-      onClick={onClick}
       className={clsx(
-        'glass-card-hover flex flex-col p-4 cursor-pointer min-h-[100px] relative transition-all',
+        'glass-card-hover flex flex-col p-4 cursor-pointer min-h-[110px] relative transition-all',
         isDragging && 'border-cyber-blue shadow-[0_0_20px_rgba(0,212,255,0.25)]',
         isReady && 'border-cyber-green/50',
         error && 'border-cyber-red/60',
@@ -176,23 +183,27 @@ function UploadZone({
       <div className="flex items-center gap-2 mb-2">
         <Icon className={clsx('w-5 h-5 shrink-0', isReady ? 'text-cyber-green' : error ? 'text-cyber-red' : 'text-cyber-blue')} />
         <span className="text-sm text-cyber-white font-medium">{label}</span>
-        {isReady && <CheckCircle2 className="w-4 h-4 text-cyber-green ml-auto" />}
+        {isReady && <span className="ml-auto text-xs text-cyber-dim font-mono">{files.length} 个文件</span>}
+        {isReady && <CheckCircle2 className="w-4 h-4 text-cyber-green" />}
         {!isReady && error && <XCircle className="w-4 h-4 text-cyber-red ml-auto" />}
       </div>
 
       {!isReady && !error && (
-        <span className="text-xs text-cyber-dim mb-2">{hint}</span>
+        <div className="space-y-1">
+          <span className="text-xs text-cyber-dim font-medium">{hint}</span>
+          <span className="text-[10px] text-cyber-dim/70 block">支持: {formats}</span>
+        </div>
       )}
 
       {error && (
-        <div className="flex items-start gap-1.5 text-xs text-cyber-red leading-relaxed bg-cyber-red/5 px-2 py-1.5 rounded">
+        <div className="flex items-start gap-1.5 text-xs text-cyber-red leading-relaxed bg-cyber-red/5 px-2 py-1.5 rounded whitespace-pre-line">
           <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           <span>{error}</span>
         </div>
       )}
 
       {isReady && (
-        <div className="space-y-1.5 mt-1">
+        <div className="space-y-1.5 mt-1 flex-1">
           {files.map((f, idx) => (
             <div
               key={`${f.name}-${idx}`}
@@ -200,13 +211,17 @@ function UploadZone({
             >
               <FileIcon className="w-3.5 h-3.5 text-cyber-blue shrink-0" />
               <span className="text-cyber-white truncate flex-1" title={f.name}>{f.name}</span>
-              <span className="text-cyber-dim shrink-0 font-mono">{formatFileSize(f.size)}</span>
+              <span className="text-cyber-blue/80 shrink-0 font-mono text-[10px] px-1.5 py-0.5 rounded bg-cyber-blue/10">
+                {f.type.replace('.', '')}
+              </span>
+              <span className="text-cyber-dim shrink-0 font-mono text-[10px]">{formatFileSize(f.size)}</span>
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  clearUploadedFiles(taskId, category)
+                  removeUploadedFile(taskId, category, f.name)
                 }}
                 className="text-cyber-dim hover:text-cyber-red shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                title={`删除 ${f.name}`}
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -215,14 +230,35 @@ function UploadZone({
         </div>
       )}
 
-      {!isReady && !error && (
-        <span className="text-xs text-cyber-dim mt-auto">点击或拖拽文件到此上传</span>
-      )}
+      <div className="flex items-center gap-2 mt-auto pt-2">
+        <button
+          onClick={(e) => { e.stopPropagation(); onClick() }}
+          className="text-[10px] px-2 py-1 rounded bg-cyber-blue/10 text-cyber-blue hover:bg-cyber-blue/20 transition-colors"
+        >
+          {isReady ? '+ 添加文件' : '选择文件'}
+        </button>
+        {isReady && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              clearUploadedFiles(taskId, category)
+              setTimeout(onClick, 50)
+            }}
+            className="text-[10px] px-2 py-1 rounded bg-deep-600/50 text-cyber-dim hover:text-cyber-white transition-colors"
+          >
+            替换全部
+          </button>
+        )}
+        {!isReady && !error && (
+          <span className="text-[10px] text-cyber-dim/70 ml-auto">或拖拽文件到此</span>
+        )}
+      </div>
 
       <input
         ref={inputRef}
         type="file"
         accept={accept}
+        multiple
         className="hidden"
         onChange={onChange}
       />
@@ -339,11 +375,14 @@ const EMI_RANGES: [number, string][] = [[6 / 30, '#FF2D55'], [12 / 30, '#FF6B35'
 export default function Simulation() {
   const { id } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { tasks, monitoringData, alerts, uploadedFiles, setFilterModelId } = useStore()
+  const { tasks, monitoringData, alerts, uploadedFiles, setFilterModelId, updateTaskMetrics, addAlert, addMonitoringPoint, advanceTask, updateTaskStatus } = useStore()
   const task = tasks.find((t) => t.id === id)
   const taskAlerts = alerts.filter((a) => a.taskId === id && a.status === 'active')
   const taskMonitoring = monitoringData.filter((m) => m.taskId === id)
   const files = uploadedFiles[id!]
+
+  const [simulating, setSimulating] = useState(false)
+  const [simError, setSimError] = useState<string | null>(null)
 
   useEffect(() => {
     const modelIdFromUrl = searchParams.get('modelId')
@@ -354,10 +393,6 @@ export default function Simulation() {
     }
   }, [searchParams, setSearchParams, setFilterModelId])
 
-  if (!task || !id) {
-    return <div className="flex items-center justify-center h-full text-cyber-dim">未找到任务数据</div>
-  }
-
   const uploadStatus = [
     { label: '几何文件', ready: (files?.geometry ?? []).length > 0 },
     { label: '材料热物性', ready: (files?.material ?? []).length > 0 },
@@ -366,6 +401,177 @@ export default function Simulation() {
   ]
   const allUploaded = uploadStatus.every((s) => s.ready)
   const uploadedCount = uploadStatus.filter((s) => s.ready).length
+
+  const canStart = allUploaded && task && (task.status === 'pending_verification' || task.status === 'error_rollback') && !simulating
+
+  useEffect(() => {
+    if (!simulating || !task || !id) return
+
+    let step = 0
+    const totalSteps = 60
+    const stages = [
+      { status: 'pending_verification' as TaskStatus, duration: 8, tempStart: 55, stressStart: 100, emiStart: 14 },
+      { status: 'mesh_generation' as TaskStatus, duration: 10, tempStart: 58, stressStart: 115, emiStart: 13.5 },
+      { status: 'thermal_solving' as TaskStatus, duration: 14, tempStart: 65, stressStart: 130, emiStart: 13 },
+      { status: 'stress_analysis' as TaskStatus, duration: 12, tempStart: 72, stressStart: 155, emiStart: 12.5 },
+      { status: 'emc_evaluation' as TaskStatus, duration: 10, tempStart: 75, stressStart: 180, emiStart: 12 },
+      { status: 'life_prediction' as TaskStatus, duration: 6, tempStart: 77, stressStart: 200, emiStart: 11 },
+    ]
+
+    let stageIdx = 0
+    let stageProgress = 0
+    const interval = setInterval(() => {
+      step++
+      stageProgress++
+
+      const stage = stages[stageIdx]
+      const nextStage = stages[Math.min(stageIdx + 1, stages.length - 1)]
+
+      const stageFrac = stage.duration > 0 ? stageProgress / stage.duration : 1
+      const temp = stage.tempStart + (nextStage.tempStart - stage.tempStart) * stageFrac + (Math.random() - 0.5) * 3
+      const stress = stage.stressStart + (nextStage.stressStart - stage.stressStart) * stageFrac + (Math.random() - 0.5) * 8
+      const emi = stage.emiStart + (nextStage.emiStart - stage.emiStart) * stageFrac + (Math.random() - 0.5) * 0.8
+
+      const totalProgress = Math.min(100, Math.round((step / totalSteps) * 100))
+
+      if (task.modelName.includes('火星') && stageIdx >= 2 && stageFrac > 0.6) {
+        // 火星沙尘暴工况有概率触发热越限
+        if (Math.random() < 0.3 && stageIdx === 2 && temp > 88) {
+          clearInterval(interval)
+          setSimulating(false)
+          setSimError(`热求解阶段异常：结温 ${temp.toFixed(1)}°C 超过阈值 85°C`)
+          updateTaskStatus(id, 'error_rollback')
+          addAlert({
+            taskId: id,
+            modelId: task.modelId,
+            modelName: task.modelName,
+            type: 'temperature',
+            level: 'critical',
+            message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发热越限，结温 ${temp.toFixed(1)}°C 超过阈值 85°C，已自动回退。`,
+          })
+          return
+        }
+      }
+
+      if (task.modelName.includes('嫦娥') && stageIdx >= 3 && stageFrac > 0.5) {
+        if (Math.random() < 0.25 && stageIdx === 3 && stress > 255) {
+          clearInterval(interval)
+          setSimulating(false)
+          setSimError(`应力分析阶段异常：等效应力 ${stress.toFixed(1)}MPa 超过阈值 250MPa`)
+          updateTaskStatus(id, 'error_rollback')
+          addAlert({
+            taskId: id,
+            modelId: task.modelId,
+            modelName: task.modelName,
+            type: 'stress',
+            level: 'critical',
+            message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发应力越限，等效应力 ${stress.toFixed(1)}MPa 超过阈值 250MPa，已自动回退。`,
+          })
+          return
+        }
+      }
+
+      if (task.modelName.includes('木星') && stageIdx >= 4 && stageFrac > 0.4) {
+        if (Math.random() < 0.35 && emi < 7) {
+          clearInterval(interval)
+          setSimulating(false)
+          setSimError(`电磁兼容评估异常：EMI 裕度 ${emi.toFixed(1)}dB 低于阈值 6dB`)
+          updateTaskStatus(id, 'error_rollback')
+          addAlert({
+            taskId: id,
+            modelId: task.modelId,
+            modelName: task.modelName,
+            type: 'emi',
+            level: 'critical',
+            message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发 EMI 越限，裕度 ${emi.toFixed(1)}dB 低于阈值 6dB，已自动回退。`,
+          })
+          return
+        }
+      }
+
+      updateTaskMetrics(id, {
+        junctionTemp: +temp.toFixed(1),
+        equivalentStress: +stress.toFixed(1),
+        emiMargin: +emi.toFixed(1),
+        progress: totalProgress,
+      })
+
+      addMonitoringPoint({
+        taskId: id,
+        timestamp: new Date().toISOString(),
+        junctionTemp: +temp.toFixed(1),
+        equivalentStress: +stress.toFixed(1),
+        emiMargin: +emi.toFixed(1),
+      })
+
+      if (temp > 85 && stageIdx >= 2) {
+        addAlert({
+          taskId: id,
+          modelId: task.modelId,
+          modelName: task.modelName,
+          type: 'temperature',
+          level: 'warning',
+          message: `结温预警 ${temp.toFixed(1)}°C (阈值 85°C)，当前阶段 ${STATUS_LABELS[stage.status]}。`,
+        })
+      }
+      if (stress > 250 && stageIdx >= 3) {
+        addAlert({
+          taskId: id,
+          modelId: task.modelId,
+          modelName: task.modelName,
+          type: 'stress',
+          level: 'warning',
+          message: `应力预警 ${stress.toFixed(1)}MPa (阈值 250MPa)，当前阶段 ${STATUS_LABELS[stage.status]}。`,
+        })
+      }
+      if (emi < 6 && stageIdx >= 4) {
+        addAlert({
+          taskId: id,
+          modelId: task.modelId,
+          modelName: task.modelName,
+          type: 'emi',
+          level: 'warning',
+          message: `EMI 裕度预警 ${emi.toFixed(1)}dB (阈值 6dB)，当前阶段 ${STATUS_LABELS[stage.status]}。`,
+        })
+      }
+
+      if (stageProgress >= stage.duration && stageIdx < stages.length - 1) {
+        stageIdx++
+        stageProgress = 0
+        advanceTask(id)
+      }
+
+      if (step >= totalSteps) {
+        clearInterval(interval)
+        setSimulating(false)
+        updateTaskStatus(id, 'completed')
+        updateTaskMetrics(id, { progress: 100 })
+        addAlert({
+          taskId: id,
+          modelId: task.modelId,
+          modelName: task.modelName,
+          type: 'completion',
+          level: 'info',
+          message: '多物理场耦合仿真已完成，所有指标在安全阈值内。',
+        })
+      }
+    }, 200)
+
+    return () => clearInterval(interval)
+  }, [simulating, task?.id, id, task?.modelId, task?.modelName, task?.modelName?.includes, updateTaskMetrics, updateTaskStatus, addAlert, addMonitoringPoint, advanceTask])
+
+  const handleStartSimulation = () => {
+    if (!canStart) return
+    setSimError(null)
+    if (task?.status === 'error_rollback') {
+      updateTaskStatus(id!, 'pending_verification')
+    }
+    setSimulating(true)
+  }
+
+  if (!task || !id) {
+    return <div className="flex items-center justify-center h-full text-cyber-dim">未找到任务数据</div>
+  }
 
   const lineOption = {
     backgroundColor: 'transparent',
@@ -439,6 +645,73 @@ export default function Simulation() {
           <div className="grid grid-cols-2 gap-3">
             {UPLOAD_ZONES.map((zone) => <UploadZone key={zone.label} {...zone} taskId={id} />)}
           </div>
+
+          <div className="mt-4 pt-4 border-t border-deep-500/50">
+            {task.status === 'error_rollback' && (
+              <div className="mb-3 p-3 bg-cyber-red/10 border border-cyber-red/40 rounded-lg">
+                <div className="flex items-center gap-2 mb-1">
+                  <AlertTriangle className="w-4 h-4 text-cyber-red" />
+                  <span className="text-sm font-semibold text-cyber-red">仿真异常回退</span>
+                </div>
+                <p className="text-xs text-cyber-dim">{simError || '上一轮仿真触发阈值越限，已自动回退至初始状态。'}</p>
+                <p className="text-xs text-cyber-dim mt-1">修正参数后可重新启动耦合求解。</p>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleStartSimulation}
+                disabled={!canStart}
+                className={clsx(
+                  'flex-1 py-2.5 px-4 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-all',
+                  canStart
+                    ? 'bg-gradient-to-r from-cyber-blue to-cyber-purple text-white hover:shadow-[0_0_20px_rgba(0,212,255,0.4)] hover:-translate-y-0.5'
+                    : 'bg-deep-600/50 text-cyber-dim cursor-not-allowed border border-deep-500/50'
+                )}
+              >
+                {simulating ? (
+                  <>
+                    <Zap className="w-4 h-4 animate-pulse" />
+                    耦合求解进行中...
+                  </>
+                ) : task.status === 'completed' ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-cyber-green" />
+                    仿真已完成
+                  </>
+                ) : task.status === 'error_rollback' ? (
+                  <>
+                    <RotateCcw className="w-4 h-4" />
+                    重新开始耦合求解
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4" />
+                    开始耦合求解
+                  </>
+                )}
+              </button>
+
+              {!allUploaded && (
+                <div className="text-xs text-cyber-dim">
+                  还需就绪 <span className="text-cyber-orange font-mono">{4 - uploadedCount}</span> 类文件
+                </div>
+              )}
+            </div>
+
+            {!allUploaded && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-cyber-dim">
+                <span>就绪状态:</span>
+                <div className="flex-1 h-1.5 bg-deep-600 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-cyber-blue to-cyber-green transition-all duration-300"
+                    style={{ width: `${(uploadedCount / 4) * 100}%` }}
+                  />
+                </div>
+                <span className="font-mono text-cyber-blue">{uploadedCount}/4</span>
+              </div>
+            )}
+          </div>
         </div>
         <div className="glass-card p-4 flex-1">
           <h3 className="section-title text-sm mb-3"><Box className="w-4 h-4" />三维模型预览</h3>
@@ -464,6 +737,23 @@ export default function Simulation() {
             <span className="font-orbitron text-xs text-cyber-blue">{task.progress}%</span>
           </div>
           <StatusPipeline current={task.status} />
+          <div className="mt-3 h-1.5 bg-deep-600 rounded-full overflow-hidden">
+            <div
+              className={clsx(
+                'h-full rounded-full transition-all duration-300',
+                task.status === 'error_rollback'
+                  ? 'bg-cyber-red'
+                  : task.status === 'completed'
+                    ? 'bg-cyber-green'
+                    : 'bg-gradient-to-r from-cyber-blue to-cyber-purple'
+              )}
+              style={{ width: `${task.progress}%` }}
+            />
+          </div>
+          <div className="mt-2 flex items-center justify-between text-[10px] text-cyber-dim">
+            <span>型号: {task.modelName}</span>
+            <span className="font-mono">ID: {task.id.slice(0, 12)}</span>
+          </div>
         </div>
         <div className="glass-card p-4">
           <h3 className="section-title text-sm mb-2"><AlertTriangle className="w-4 h-4" />实时监控</h3>
@@ -473,17 +763,61 @@ export default function Simulation() {
             <GaugeChart value={task.emiMargin} max={30} label="EMI裕量" unit="dB" ranges={EMI_RANGES} />
           </div>
         </div>
-        <div className="glass-card p-4 flex-1">
+        <div className="glass-card p-4 flex-1 min-h-0">
           <h3 className="section-title text-sm mb-2">时序曲线</h3>
           <ReactECharts option={lineOption} style={{ height: 'calc(100% - 30px)' }} opts={{ renderer: 'canvas' }} />
         </div>
-        {taskAlerts.length > 0 && (
+
+        <div className="glass-card p-4 max-h-48 overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="section-title text-sm"><AlertTriangle className="w-4 h-4" />仿真告警</h3>
+            <span className="text-[10px] text-cyber-dim font-mono">{taskAlerts.length} 条</span>
+          </div>
+          {taskAlerts.length === 0 ? (
+            <div className="text-xs text-cyber-dim/60 text-center py-3">
+              暂无告警，指标均在安全阈值内
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {taskAlerts.slice(0, 8).map((alert) => (
+                <div
+                  key={alert.id}
+                  className={clsx(
+                    'p-2 rounded border-l-2 text-xs',
+                    alert.level === 'critical'
+                      ? 'bg-cyber-red/10 border-cyber-red'
+                      : alert.level === 'warning'
+                        ? 'bg-cyber-orange/10 border-cyber-orange'
+                        : 'bg-cyber-blue/10 border-cyber-blue'
+                  )}
+                >
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <span className={clsx(
+                      'text-[10px] font-bold uppercase',
+                      alert.level === 'critical'
+                        ? 'text-cyber-red'
+                        : alert.level === 'warning'
+                          ? 'text-cyber-orange'
+                          : 'text-cyber-blue'
+                    )}>
+                      {alert.level === 'critical' ? '严重' : alert.level === 'warning' ? '警告' : '信息'}
+                    </span>
+                    <span className="text-cyber-white font-medium">{alert.type === 'temperature' ? '温度' : alert.type === 'stress' ? '应力' : alert.type === 'emi' ? 'EMI' : '系统'}</span>
+                  </div>
+                  <p className="text-cyber-dim/90 text-[11px] leading-relaxed">{alert.message}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {taskAlerts.filter(a => a.level === 'critical').length > 0 && (
           <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-50 max-w-xs">
-            {taskAlerts.map((alert) => (
-              <div key={alert.id} className={`glass-card p-3 border-l-2 ${ALERT_LEVEL_BORDER[alert.level] || 'border-cyber-blue'}`}>
+            {taskAlerts.filter(a => a.level === 'critical').slice(0, 2).map((alert) => (
+              <div key={alert.id} className={`glass-card p-3 border-l-2 border-cyber-red animate-pulse`}>
                 <div className="flex items-center gap-2 mb-1">
                   <AlertTriangle className="w-3 h-3 text-cyber-red" />
-                  <span className="text-xs font-semibold text-cyber-white">{alert.type.toUpperCase()}</span>
+                  <span className="text-xs font-semibold text-cyber-red">严重告警</span>
                 </div>
                 <p className="text-xs text-cyber-dim line-clamp-2">{alert.message}</p>
               </div>

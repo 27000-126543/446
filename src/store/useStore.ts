@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SimulationTask, Alert, Approval, Recommendation, SpacecraftModel, DailyStats, AdjustmentLog, MonitoringData, TaskStatus } from '@/types'
+import type { SimulationTask, Alert, Approval, Recommendation, SpacecraftModel, DailyStats, AdjustmentLog, MonitoringData, TaskStatus, AlertType, AlertLevel } from '@/types'
 import { simulationTasks, alerts, approvals, recommendations, spacecraftModels, dailyStats, adjustmentLogs, monitoringData } from '@/data/mockData'
 
 export interface UploadedFile {
@@ -64,11 +64,14 @@ interface AppStore {
   addModel: (model: SpacecraftModel) => void
 
   addTask: (task: SimulationTask) => void
-  addMonitoringPoint: (data: MonitoringData) => void
+  addMonitoringPoint: (data: Omit<MonitoringData, 'id'>) => void
 
   uploadFile: (taskId: string, category: UploadCategory, file: UploadedFile) => void
+  removeUploadedFile: (taskId: string, category: UploadCategory, fileName: string) => void
   clearUploadedFiles: (taskId: string, category: UploadCategory) => void
   setFilterModelId: (modelId: string | null) => void
+  updateTaskMetrics: (taskId: string, updates: Partial<{ junctionTemp: number; equivalentStress: number; emiMargin: number; progress: number; status: TaskStatus; lifeYears: number }>) => void
+  addAlert: (alert: Partial<Alert> & { taskId: string; type: AlertType; level: AlertLevel; message: string }) => void
 }
 
 export const useStore = create<AppStore>((set) => ({
@@ -175,7 +178,15 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => ({ tasks: [...state.tasks, task] })),
 
   addMonitoringPoint: (data) =>
-    set((state) => ({ monitoringData: [...state.monitoringData, data] })),
+    set((state) => ({
+      monitoringData: [
+        ...state.monitoringData,
+        {
+          ...data,
+          id: `mon-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        },
+      ],
+    })),
 
   addModel: (model) =>
     set((state) => ({ models: [...state.models, model] })),
@@ -194,6 +205,20 @@ export const useStore = create<AppStore>((set) => ({
       }
     }),
 
+  removeUploadedFile: (taskId, category, fileName) =>
+    set((state) => {
+      const taskFiles = state.uploadedFiles[taskId] || { geometry: [], material: [], orbit: [], electronic: [] }
+      return {
+        uploadedFiles: {
+          ...state.uploadedFiles,
+          [taskId]: {
+            ...taskFiles,
+            [category]: taskFiles[category].filter((f) => f.name !== fileName),
+          },
+        },
+      }
+    }),
+
   clearUploadedFiles: (taskId, category) =>
     set((state) => {
       const taskFiles = state.uploadedFiles[taskId] || { geometry: [], material: [], orbit: [], electronic: [] }
@@ -206,4 +231,35 @@ export const useStore = create<AppStore>((set) => ({
     }),
 
   setFilterModelId: (modelId) => set({ filterModelId: modelId }),
+
+  updateTaskMetrics: (taskId, updates) =>
+    set((state) => ({
+      tasks: state.tasks.map((t) => (t.id === taskId ? { ...t, ...updates } : t)),
+    })),
+
+  addAlert: (alert) =>
+    set((state) => {
+      const task = state.tasks.find((t) => t.id === alert.taskId)
+      return {
+        alerts: [
+          {
+            id: `alert-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            taskId: alert.taskId,
+            taskName: task?.name ?? alert.taskName ?? 'Unknown Task',
+            modelId: alert.modelId ?? task?.modelId,
+            modelName: alert.modelName ?? task?.modelName,
+            type: alert.type,
+            level: alert.level,
+            message: alert.message,
+            thresholdValue: alert.thresholdValue ?? 0,
+            actualValue: alert.actualValue ?? 0,
+            status: 'active' as const,
+            reviewedBy: null,
+            createdAt: new Date().toISOString(),
+            ...alert,
+          },
+          ...state.alerts,
+        ],
+      }
+    }),
 }))

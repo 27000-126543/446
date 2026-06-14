@@ -9,7 +9,7 @@ export type TaskStatus =
   | 'error_rollback'
 
 export type AlertLevel = 'info' | 'warning' | 'critical' | 'emergency'
-export type AlertType = 'temperature' | 'stress' | 'emi'
+export type AlertType = 'temperature' | 'stress' | 'emi' | 'completion' | 'system'
 export type ApprovalLevel = 'thermal_expert' | 'chief_engineer'
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
 export type ModelStatus = 'active' | 'suspended'
@@ -56,6 +56,8 @@ export interface Alert {
   id: string
   taskId: string
   taskName: string
+  modelId?: string
+  modelName?: string
   type: AlertType
   level: AlertLevel
   message: string

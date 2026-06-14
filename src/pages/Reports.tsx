@@ -1,10 +1,11 @@
 import { useState, useMemo, useRef } from 'react'
 import { motion } from 'framer-motion'
 import ReactECharts from 'echarts-for-react'
-import { FileText, Download, Filter, ChevronDown } from 'lucide-react'
+import { FileText, Download, Filter, ChevronDown, GitCompare, ArrowUpDown, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import jsPDF from 'jspdf'
 import type { SimulationTask } from '@/types'
+import { clsx } from 'clsx'
 
 const SUBSYSTEMS = ['电源', '通信', '热控', '姿控', '推进', '测控', '数管', '有效载荷']
 
@@ -93,6 +94,42 @@ function genAgingCurves(seed: string, scale: number) {
   return { cycles, thermal, mechanical, electrical }
 }
 
+function genLifePredictionCurves(seed: string, orbitScale: number, powerScale: number, bandScale: number) {
+  const rand = seededRandom(hashCode(seed) ^ 0xd3b7a43)
+  const baseLife = 12
+
+  const cycleCounts = Array.from({ length: 20 }, (_, i) => (i + 1) * 50)
+  const lifeByCycles = cycleCounts.map((n) => {
+    const degradation = 1 - (n / 1000) * 0.35 * orbitScale
+    return +Math.max(0.5, baseLife * Math.exp(-degradation * 1.5)).toFixed(2)
+  })
+
+  const powerLevels = [0.2, 0.4, 0.6, 0.75, 0.9, 1.0, 1.15, 1.3, 1.45, 1.6]
+  const lifeByPower = powerLevels.map((p) => {
+    const factor = Math.pow(p, 1.8) * powerScale
+    return +Math.max(0.5, baseLife / Math.max(0.3, factor)).toFixed(2)
+  })
+
+  const bands = ['VHF', 'S', 'X', 'Ku', 'Ka', 'Q', 'W']
+  const freqs = [0.3, 2.5, 10, 18, 35, 50, 75]
+  const lifeByBand = freqs.map((f) => {
+    const emiStress = Math.log10(f + 1) * 0.15 * bandScale
+    return +Math.max(0.5, baseLife * (1 - emiStress * 0.6)).toFixed(2)
+  })
+
+  return {
+    cycleCounts,
+    lifeByCycles,
+    powerLevels: powerLevels.map(p => +(p * 100).toFixed(0)),
+    lifeByPower,
+    bandNames: bands,
+    bandFreqs: freqs,
+    lifeByBand,
+    estimatedLifeYears: +(baseLife * orbitScale * (1 / powerScale) * bandScale).toFixed(2),
+    meanTimeToFailure: +(baseLife * 8760 * orbitScale * (1 / powerScale) * bandScale).toFixed(0),
+  }
+}
+
 function genCrosstalkMatrix(seed: string, scale: number) {
   const rand = seededRandom(hashCode(seed) ^ 0xf61e5f5b)
   const data: number[][] = []
@@ -137,10 +174,18 @@ export default function Reports() {
   const [powerLevel, setPowerLevel] = useState<PowerLevel>('全功率')
   const [exportFmt, setExportFmt] = useState('CSV')
   const [exporting, setExporting] = useState(false)
+  const [compareMode, setCompareMode] = useState(false)
+  const [orbitPhase2, setOrbitPhase2] = useState<OrbitPhase>('近星阶段')
+  const [commBand2, setCommBand2] = useState<CommBand>('Ka频段')
+  const [powerLevel2, setPowerLevel2] = useState<PowerLevel>('满功率')
+  const [compareExportFmt, setCompareExportFmt] = useState('CSV')
   const tempChartRef = useRef<ReactECharts>(null)
   const dispChartRef = useRef<ReactECharts>(null)
   const jitterChartRef = useRef<ReactECharts>(null)
   const agingChartRef = useRef<ReactECharts>(null)
+  const lifeCycleChartRef = useRef<ReactECharts>(null)
+  const lifePowerChartRef = useRef<ReactECharts>(null)
+  const lifeBandChartRef = useRef<ReactECharts>(null)
 
   const task = tasks.find((t) => t.id === selectedTask)
 
@@ -179,6 +224,67 @@ export default function Reports() {
     () => task ? deriveMetrics(task, orbitPhase, commBand, powerLevel) : null,
     [task, orbitPhase, commBand, powerLevel],
   )
+
+  const lifePrediction = useMemo(
+    () => genLifePredictionCurves(
+      seedKey + ':L',
+      orbitScale.aging,
+      powerScale.aging,
+      bandScale.emiMargin,
+    ),
+    [seedKey, orbitScale.aging, powerScale.aging, bandScale.emiMargin],
+  )
+
+  // 第二组筛选数据（对比模式）
+  const seedKey2 = useMemo(
+    () => `${selectedTask}|${orbitPhase2}|${commBand2}|${powerLevel2}|v2`,
+    [selectedTask, orbitPhase2, commBand2, powerLevel2],
+  )
+
+  const orbitScale2 = ORBIT_SCALING[orbitPhase2]
+  const bandScale2 = BAND_SCALING[commBand2]
+  const powerScale2 = POWER_SCALING[powerLevel2]
+
+  const tempData2 = useMemo(
+    () => genHeatmap10x10(seedKey2 + ':T', orbitScale2.thermal * powerScale2.thermal),
+    [seedKey2, orbitScale2.thermal, powerScale2.thermal],
+  )
+  const dispData2 = useMemo(
+    () => genDisplacementField(seedKey2 + ':D', orbitScale2.displacement * powerScale2.displacement),
+    [seedKey2, orbitScale2.displacement, powerScale2.displacement],
+  )
+  const jitterData2 = useMemo(
+    () => genJitterSignal(seedKey2 + ':J', bandScale2.jitter * orbitScale2.jitter),
+    [seedKey2, bandScale2.jitter, orbitScale2.jitter],
+  )
+  const agingData2 = useMemo(
+    () => genAgingCurves(seedKey2 + ':A', orbitScale2.aging * powerScale2.aging),
+    [seedKey2, orbitScale2.aging, powerScale2.aging],
+  )
+  const crosstalkData2 = useMemo(
+    () => genCrosstalkMatrix(seedKey2 + ':E', bandScale2.crosstalk),
+    [seedKey2, bandScale2.crosstalk],
+  )
+  const metrics2 = useMemo(
+    () => task ? deriveMetrics(task, orbitPhase2, commBand2, powerLevel2) : null,
+    [task, orbitPhase2, commBand2, powerLevel2],
+  )
+
+  // 差异计算
+  const diffMetrics = useMemo(() => {
+    if (!metrics || !metrics2) return null
+    const calcDiff = (v1: number, v2: number) => ({
+      value: +(v2 - v1).toFixed(2),
+      percent: +(((v2 - v1) / Math.max(0.001, v1)) * 100).toFixed(1),
+    })
+    return {
+      junctionTemp: calcDiff(metrics.junctionTemp, metrics2.junctionTemp),
+      equivalentStress: calcDiff(metrics.equivalentStress, metrics2.equivalentStress),
+      emiMargin: calcDiff(metrics.emiMargin, metrics2.emiMargin),
+      heatFluxPeak: calcDiff(metrics.heatFluxPeak, metrics2.heatFluxPeak),
+      solarCellDegradation: calcDiff(metrics.solarCellDegradation, metrics2.solarCellDegradation),
+    }
+  }, [metrics, metrics2])
 
   const tempOption = useMemo(() => ({
     tooltip: { position: 'top' },
@@ -227,6 +333,76 @@ export default function Reports() {
     visualMap: { min: 0, max: 0.75, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#0A0E1A', '#00D4FF', '#FF2D55'] }, textStyle: { color: '#6B7394' } },
     series: [{ type: 'heatmap', data: crosstalkData, label: { show: true, color: '#E8EDF5', fontSize: 9 }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }],
   }), [crosstalkData])
+
+  const lifeCycleOption = useMemo(() => ({
+    tooltip: { trigger: 'axis', formatter: (p: any) => `热循环次数: ${p[0].value[0]}次<br/>预测寿命: ${p[0].value[1]}年` },
+    grid: { top: 25, right: 15, bottom: 35, left: 50 },
+    xAxis: { type: 'category', name: '热循环次数', nameTextStyle: { color: '#6B7394', fontSize: 10 }, data: lifePrediction.cycleCounts, axisLabel: { color: '#6B7394', fontSize: 9 } },
+    yAxis: { type: 'value', name: '寿命(年)', nameTextStyle: { color: '#6B7394', fontSize: 10 }, axisLabel: { color: '#6B7394', fontSize: 10 }, splitLine: { lineStyle: { color: '#252E52' } } },
+    series: [{
+      type: 'line',
+      data: lifePrediction.lifeByCycles,
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { color: '#FF6B35', width: 2 },
+      itemStyle: { color: '#FF6B35' },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(255,107,53,0.4)' },
+            { offset: 1, color: 'rgba(255,107,53,0)' }
+          ]
+        }
+      }
+    }],
+  }), [lifePrediction])
+
+  const lifePowerOption = useMemo(() => ({
+    tooltip: { trigger: 'axis', formatter: (p: any) => `功率负载: ${p[0].value[0]}%<br/>预测寿命: ${p[0].value[1]}年` },
+    grid: { top: 25, right: 15, bottom: 35, left: 50 },
+    xAxis: { type: 'category', name: '功率负载(%)', nameTextStyle: { color: '#6B7394', fontSize: 10 }, data: lifePrediction.powerLevels, axisLabel: { color: '#6B7394', fontSize: 9 } },
+    yAxis: { type: 'value', name: '寿命(年)', nameTextStyle: { color: '#6B7394', fontSize: 10 }, axisLabel: { color: '#6B7394', fontSize: 10 }, splitLine: { lineStyle: { color: '#252E52' } } },
+    series: [{
+      type: 'line',
+      data: lifePrediction.lifeByPower,
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { color: '#00E5A0', width: 2 },
+      itemStyle: { color: '#00E5A0' },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(0,229,160,0.4)' },
+            { offset: 1, color: 'rgba(0,229,160,0)' }
+          ]
+        }
+      }
+    }],
+  }), [lifePrediction])
+
+  const lifeBandOption = useMemo(() => ({
+    tooltip: { trigger: 'axis', formatter: (p: any) => `通信频段: ${p[0].name}<br/>预测寿命: ${p[0].value}年` },
+    grid: { top: 25, right: 15, bottom: 35, left: 50 },
+    xAxis: { type: 'category', name: '通信频段', nameTextStyle: { color: '#6B7394', fontSize: 10 }, data: lifePrediction.bandNames, axisLabel: { color: '#6B7394', fontSize: 10 } },
+    yAxis: { type: 'value', name: '寿命(年)', nameTextStyle: { color: '#6B7394', fontSize: 10 }, axisLabel: { color: '#6B7394', fontSize: 10 }, splitLine: { lineStyle: { color: '#252E52' } } },
+    series: [{
+      type: 'bar',
+      data: lifePrediction.lifeByBand,
+      barWidth: '50%',
+      itemStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: '#7B61FF' },
+            { offset: 1, color: '#00D4FF' }
+          ]
+        },
+        borderRadius: [4, 4, 0, 0]
+      }
+    }],
+  }), [lifePrediction])
 
   function captureChart(ref: React.RefObject<ReactECharts>) {
     try {
@@ -427,6 +603,81 @@ export default function Reports() {
       })
     })
 
+    doc.addPage()
+    doc.setFillColor(10, 14, 26)
+    doc.rect(0, 0, pageWidth, pageHeight, 'F')
+    yCursor = 50
+
+    doc.setTextColor(123, 97, 255)
+    doc.setFontSize(12)
+    doc.setFont('helvetica', 'bold')
+    doc.text('6. Life Prediction Analysis (寿命预测分析)', 40, yCursor)
+    yCursor += 16
+
+    doc.setFillColor(21, 27, 54)
+    doc.roundedRect(40, yCursor, 170, 55, 4, 4, 'F')
+    doc.roundedRect(220, yCursor, 170, 55, 4, 4, 'F')
+
+    doc.setTextColor(107, 115, 148)
+    doc.setFontSize(9)
+    doc.setFont('helvetica', 'normal')
+    doc.text('Estimated Life (预测寿命)', 55, yCursor + 20)
+    doc.setTextColor(123, 97, 255)
+    doc.setFontSize(20)
+    doc.setFont('helvetica', 'bold')
+    doc.text(`${lifePrediction.estimatedLifeYears.toFixed(1)} years`, 55, yCursor + 42)
+
+    doc.setTextColor(107, 115, 148)
+    doc.setFontSize(9)
+    doc.setFont('helvetica', 'normal')
+    doc.text('MTTF (平均无故障时间)', 235, yCursor + 20)
+    doc.setTextColor(0, 212, 255)
+    doc.setFontSize(20)
+    doc.setFont('helvetica', 'bold')
+    doc.text(`${(lifePrediction.meanTimeToFailure / 1000).toFixed(1)}k hrs`, 235, yCursor + 42)
+
+    yCursor += 70
+
+    const lifeSections: { title: string; chartRef: React.RefObject<ReactECharts>; label: string }[] = [
+      { title: 'Life vs Thermal Cycles', chartRef: lifeCycleChartRef, label: '热循环次数-寿命曲线' },
+      { title: 'Life vs Power Level', chartRef: lifePowerChartRef, label: '功率档位-寿命曲线' },
+      { title: 'Life vs Comm Band', chartRef: lifeBandChartRef, label: '通信频段-寿命对比' },
+    ]
+
+    for (let i = 0; i < lifeSections.length; i++) {
+      const sec = lifeSections[i]
+      if (yCursor > pageHeight - 200) {
+        doc.addPage()
+        doc.setFillColor(10, 14, 26)
+        doc.rect(0, 0, pageWidth, pageHeight, 'F')
+        yCursor = 50
+      }
+      doc.setTextColor(0, 212, 255)
+      doc.setFontSize(11)
+      doc.setFont('helvetica', 'bold')
+      doc.text(`${i + 1}. ${sec.title} (${sec.label})`, 40, yCursor)
+      yCursor += 14
+
+      const dataUrl = captureChart(sec.chartRef)
+      if (dataUrl) {
+        try {
+          doc.addImage(dataUrl, 'PNG', 40, yCursor, pageWidth - 80, 140)
+        } catch { /* noop */ }
+      } else {
+        doc.setFillColor(21, 27, 54)
+        doc.roundedRect(40, yCursor, pageWidth - 80, 140, 4, 4, 'F')
+        doc.setTextColor(107, 115, 148)
+        doc.setFontSize(10)
+        doc.setFont('helvetica', 'normal')
+        doc.text(`${sec.label} visualization`, 60, yCursor + 70)
+      }
+      yCursor += 155
+    }
+
+    doc.addPage()
+    doc.setFillColor(10, 14, 26)
+    doc.rect(0, 0, pageWidth, pageHeight, 'F')
+
     doc.setTextColor(0, 212, 255)
     doc.setFontSize(10)
     doc.setFont('helvetica', 'bold')
@@ -507,6 +758,23 @@ export default function Reports() {
             ),
           ])
         ),
+        lifePrediction: {
+          estimatedLifeYears: lifePrediction.estimatedLifeYears,
+          meanTimeToFailureHours: lifePrediction.meanTimeToFailure,
+          thermalCycles: lifePrediction.cycleCounts,
+          lifeByCycles: lifePrediction.lifeByCycles,
+          powerLevels_pct: lifePrediction.powerLevels,
+          lifeByPower: lifePrediction.lifeByPower,
+          commBands: lifePrediction.bandNames,
+          bandFreqs_GHz: lifePrediction.bandFreqs,
+          lifeByBand: lifePrediction.lifeByBand,
+          baseLifeYears: 12,
+          agingFactors: {
+            orbit: orbitScale.aging,
+            power: powerScale.aging,
+            emiMargin: bandScale.emiMargin,
+          },
+        },
       }
 
       const baseName = `${sanitizeFilename(task.modelName)}_${sanitizeFilename(task.name)}_${sanitizeFilename(orbitPhase)}_${sanitizeFilename(commBand)}_${sanitizeFilename(powerLevel)}`
@@ -552,6 +820,32 @@ export default function Reports() {
           const row = Array.from({ length: 10 }, (_, x) => (tempData.find((d) => d[0] === x && d[1] === y)?.[2] ?? 0).toFixed(1))
           lines.push(row.join(','))
         }
+        lines.push('')
+        lines.push('# Life Prediction (寿命预测)')
+        lines.push(`Estimated Life (years),${lifePrediction.estimatedLifeYears}`)
+        lines.push(`MTTF (hours),${lifePrediction.meanTimeToFailure}`)
+        lines.push(`Base Life (years),12`)
+        lines.push(`Orbit Aging Factor,${orbitScale.aging.toFixed(3)}`)
+        lines.push(`Power Aging Factor,${powerScale.aging.toFixed(3)}`)
+        lines.push(`EMI Margin Factor,${bandScale.emiMargin.toFixed(3)}`)
+        lines.push('')
+        lines.push('# Life vs Thermal Cycles')
+        lines.push('Cycles,LifeYears')
+        lifePrediction.cycleCounts.forEach((c, i) => {
+          lines.push(`${c},${lifePrediction.lifeByCycles[i]}`)
+        })
+        lines.push('')
+        lines.push('# Life vs Power Level')
+        lines.push('LoadPct,LifeYears')
+        lifePrediction.powerLevels.forEach((p, i) => {
+          lines.push(`${p},${lifePrediction.lifeByPower[i]}`)
+        })
+        lines.push('')
+        lines.push('# Life vs Comm Band')
+        lines.push('Band,FreqGHz,LifeYears')
+        lifePrediction.bandNames.forEach((b, i) => {
+          lines.push(`${b},${lifePrediction.bandFreqs[i]},${lifePrediction.lifeByBand[i]}`)
+        })
 
         const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
         const url = URL.createObjectURL(blob)
@@ -585,6 +879,22 @@ export default function Reports() {
         lines.push('% Temperature grid (10x10)')
         const tempStr = '[' + Array.from({ length: 10 }, (_, y) => Array.from({ length: 10 }, (_, x) => (tempData.find((d) => d[0] === x && d[1] === y)?.[2] ?? 0).toFixed(1)).join(' ')).join('; ') + ']'
         lines.push(`temperature_grid=${tempStr};`)
+        lines.push('')
+        lines.push('% Life prediction')
+        lines.push(`life.estimated_years=${lifePrediction.estimatedLifeYears};`)
+        lines.push(`life.mttf_hours=${lifePrediction.meanTimeToFailure};`)
+        lines.push(`life.base_years=12;`)
+        lines.push(`life.orbit_aging_factor=${orbitScale.aging};`)
+        lines.push(`life.power_aging_factor=${powerScale.aging};`)
+        lines.push(`life.emi_margin_factor=${bandScale.emiMargin};`)
+        lines.push('')
+        lines.push(`life.cycle_counts=[${lifePrediction.cycleCounts.join(' ')}];`)
+        lines.push(`life.life_by_cycles=[${lifePrediction.lifeByCycles.join(' ')}];`)
+        lines.push(`life.power_levels_pct=[${lifePrediction.powerLevels.join(' ')}];`)
+        lines.push(`life.life_by_power=[${lifePrediction.lifeByPower.join(' ')}];`)
+        lines.push(`life.bands={'${lifePrediction.bandNames.join("','")}"};`)
+        lines.push(`life.band_freqs_ghz=[${lifePrediction.bandFreqs.join(' ')}];`)
+        lines.push(`life.life_by_band=[${lifePrediction.lifeByBand.join(' ')}];`)
 
         const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
         const url = URL.createObjectURL(blob)
@@ -599,11 +909,136 @@ export default function Reports() {
     }
   }
 
+  function handleExportCompare() {
+    if (!task || !metrics || !metrics2 || !diffMetrics || exporting) return
+    setExporting(true)
+    try {
+      const baseName = `${sanitizeFilename(task.modelName)}_${sanitizeFilename(task.name)}_COMPARE_${sanitizeFilename(orbitPhase)}${sanitizeFilename(commBand)}${sanitizeFilename(powerLevel)}_vs_${sanitizeFilename(orbitPhase2)}${sanitizeFilename(commBand2)}${sanitizeFilename(powerLevel2)}`
+
+      const crosstalkMatrix1: Record<string, Record<string, number>> = {}
+      const crosstalkMatrix2: Record<string, Record<string, number>> = {}
+      SUBSYSTEMS.forEach((row) => { crosstalkMatrix1[row] = {}; crosstalkMatrix2[row] = {} })
+      crosstalkData.forEach(([x, y, v]) => { crosstalkMatrix1[SUBSYSTEMS[y]][SUBSYSTEMS[x]] = v })
+      crosstalkData2.forEach(([x, y, v]) => { crosstalkMatrix2[SUBSYSTEMS[y]][SUBSYSTEMS[x]] = v })
+
+      if (compareExportFmt === 'JSON') {
+        const payload = {
+          taskId: task.id,
+          taskName: task.name,
+          modelName: task.modelName,
+          exportedAt: new Date().toISOString(),
+          comparison: {
+            groupA: {
+              label: '工况A',
+              filters: { orbitPhase, commBand, powerLevel },
+              filterLabels: { orbit: orbitScale.label, band: bandScale.label, power: powerScale.label },
+              metrics: {
+                junctionTemp: metrics.junctionTemp,
+                equivalentStress: metrics.equivalentStress,
+                emiMargin: metrics.emiMargin,
+                peakHeatFlux: metrics.heatFluxPeak,
+                solarCellDegradation: metrics.solarCellDegradation,
+              },
+            },
+            groupB: {
+              label: '工况B',
+              filters: { orbitPhase: orbitPhase2, commBand: commBand2, powerLevel: powerLevel2 },
+              filterLabels: { orbit: orbitScale2.label, band: bandScale2.label, power: powerScale2.label },
+              metrics: {
+                junctionTemp: metrics2.junctionTemp,
+                equivalentStress: metrics2.equivalentStress,
+                emiMargin: metrics2.emiMargin,
+                peakHeatFlux: metrics2.heatFluxPeak,
+                solarCellDegradation: metrics2.solarCellDegradation,
+              },
+            },
+            difference: {
+              junctionTemp: { delta: diffMetrics.junctionTemp.value, percent: diffMetrics.junctionTemp.percent },
+              equivalentStress: { delta: diffMetrics.equivalentStress.value, percent: diffMetrics.equivalentStress.percent },
+              emiMargin: { delta: diffMetrics.emiMargin.value, percent: diffMetrics.emiMargin.percent },
+              peakHeatFlux: { delta: diffMetrics.heatFluxPeak.value, percent: diffMetrics.heatFluxPeak.percent },
+              solarCellDegradation: { delta: diffMetrics.solarCellDegradation.value, percent: diffMetrics.solarCellDegradation.percent },
+            },
+            crosstalkComparison: SUBSYSTEMS.map((row) =>
+              SUBSYSTEMS.map((col) => ({
+                pair: `${row}→${col}`,
+                valueA: crosstalkMatrix1[row][col],
+                valueB: crosstalkMatrix2[row][col],
+                delta: +(crosstalkMatrix2[row][col] - crosstalkMatrix1[row][col]).toFixed(4),
+              }))
+            ).flat(),
+          },
+        }
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${baseName}.json`
+        a.click()
+        URL.revokeObjectURL(url)
+      } else if (compareExportFmt === 'CSV') {
+        const lines: string[] = []
+        lines.push('# Deep Space Simulation - 工况对比报告')
+        lines.push(`Task: ${task.name} (${task.modelName})`)
+        lines.push(`Exported: ${new Date().toISOString()}`)
+        lines.push('')
+        lines.push('## 工况定义')
+        lines.push('维度,工况A,工况B')
+        lines.push(`轨道阶段,${orbitPhase} (${orbitScale.label}),${orbitPhase2} (${orbitScale2.label})`)
+        lines.push(`通信频段,${commBand} (${bandScale.label}),${commBand2} (${bandScale2.label})`)
+        lines.push(`仪器功率,${powerLevel} (${powerScale.label}),${powerLevel2} (${powerScale2.label})`)
+        lines.push('')
+        lines.push('## 核心指标对比 (B - A)')
+        lines.push('指标,工况A,工况B,差值,增减百分比')
+        lines.push(`结温(°C),${metrics.junctionTemp},${metrics2.junctionTemp},${diffMetrics.junctionTemp.value > 0 ? '+' : ''}${diffMetrics.junctionTemp.value},${diffMetrics.junctionTemp.percent > 0 ? '+' : ''}${diffMetrics.junctionTemp.percent}%`)
+        lines.push(`等效应力(MPa),${metrics.equivalentStress},${metrics2.equivalentStress},${diffMetrics.equivalentStress.value > 0 ? '+' : ''}${diffMetrics.equivalentStress.value},${diffMetrics.equivalentStress.percent > 0 ? '+' : ''}${diffMetrics.equivalentStress.percent}%`)
+        lines.push(`EMI裕度(dB),${metrics.emiMargin},${metrics2.emiMargin},${diffMetrics.emiMargin.value > 0 ? '+' : ''}${diffMetrics.emiMargin.value},${diffMetrics.emiMargin.percent > 0 ? '+' : ''}${diffMetrics.emiMargin.percent}%`)
+        lines.push(`峰值热流(W/m2),${metrics.heatFluxPeak},${metrics2.heatFluxPeak},${diffMetrics.heatFluxPeak.value > 0 ? '+' : ''}${diffMetrics.heatFluxPeak.value},${diffMetrics.heatFluxPeak.percent > 0 ? '+' : ''}${diffMetrics.heatFluxPeak.percent}%`)
+        lines.push(`太阳能电池退化(%),${metrics.solarCellDegradation},${metrics2.solarCellDegradation},${diffMetrics.solarCellDegradation.value > 0 ? '+' : ''}${diffMetrics.solarCellDegradation.value},${diffMetrics.solarCellDegradation.percent > 0 ? '+' : ''}${diffMetrics.solarCellDegradation.percent}%`)
+        lines.push('')
+        lines.push('## 串扰矩阵对比 (B - A)')
+        lines.push(`子系统对,工况A,工况B,差值`)
+        SUBSYSTEMS.forEach((row) => {
+          SUBSYSTEMS.forEach((col) => {
+            const v1 = crosstalkMatrix1[row][col]
+            const v2 = crosstalkMatrix2[row][col]
+            const delta = +(v2 - v1).toFixed(4)
+            lines.push(`${row}→${col},${v1.toFixed(3)},${v2.toFixed(3)},${delta > 0 ? '+' : ''}${delta}`)
+          })
+        })
+
+        const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${baseName}.csv`
+        a.click()
+        URL.revokeObjectURL(url)
+      }
+    } finally {
+      setTimeout(() => setExporting(false), 600)
+    }
+  }
+
   return (
     <div className="space-y-4 animate-fade-in h-full overflow-y-auto pb-6">
       <div className="flex items-center gap-3">
         <FileText className="w-6 h-6 text-cyber-blue" />
         <h1 className="section-title">报告中心</h1>
+        <div className="ml-auto">
+          <button
+            onClick={() => setCompareMode(!compareMode)}
+            className={clsx(
+              'flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all',
+              compareMode
+                ? 'bg-cyber-purple/20 text-cyber-purple border border-cyber-purple/40'
+                : 'bg-deep-600/50 text-cyber-dim border border-deep-500/50 hover:border-cyber-blue/50 hover:text-cyber-blue'
+            )}
+          >
+            <GitCompare className="w-4 h-4" />
+            工况对比
+          </button>
+        </div>
       </div>
 
       <div className="glass-card p-4">
@@ -682,63 +1117,328 @@ export default function Reports() {
       </div>
 
       <div className="glass-card p-4">
-        <h2 className="section-title mb-4">数据导出</h2>
-        <div className="grid grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div>
-              <span className="text-xs text-cyber-dim block mb-2">轨道阶段</span>
-              <div className="flex gap-3 flex-wrap">
-                {(['近地阶段', '转移阶段', '近星阶段', '远星阶段', '全阶段'] as OrbitPhase[]).map((v) => (
-                  <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
-                    <input type="radio" name="orbit" checked={orbitPhase === v} onChange={() => setOrbitPhase(v)} className="accent-[#00D4FF]" />
-                    <span className={orbitPhase === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
-                  </label>
-                ))}
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="section-title flex items-center gap-2">
+            <span className="w-1.5 h-5 bg-gradient-to-b from-cyber-purple to-cyber-blue rounded-full" />
+            寿命预测分析
+          </h2>
+          {metrics && (
+            <div className="flex items-center gap-4 text-xs">
+              <div className="px-3 py-1.5 bg-cyber-purple/10 rounded-lg border border-cyber-purple/30">
+                <span className="text-cyber-dim">预测寿命</span>
+                <span className="ml-2 font-orbitron text-cyber-purple text-sm font-bold">
+                  {lifePrediction.estimatedLifeYears}年
+                </span>
+              </div>
+              <div className="px-3 py-1.5 bg-cyber-blue/10 rounded-lg border border-cyber-blue/30">
+                <span className="text-cyber-dim">MTTF</span>
+                <span className="ml-2 font-orbitron text-cyber-blue text-sm font-bold">
+                  {(lifePrediction.meanTimeToFailure / 1000).toFixed(1)}k小时
+                </span>
               </div>
             </div>
-            <div>
-              <span className="text-xs text-cyber-dim block mb-2">通信频段</span>
-              <div className="flex gap-3 flex-wrap">
-                {(['S频段', 'X频段', 'Ka频段', '全频段'] as CommBand[]).map((v) => (
-                  <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
-                    <input type="radio" name="band" checked={commBand === v} onChange={() => setCommBand(v)} className="accent-[#00D4FF]" />
-                    <span className={commBand === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div>
-              <span className="text-xs text-cyber-dim block mb-2">仪器功率</span>
-              <div className="flex gap-3 flex-wrap">
-                {(['低功率', '额定功率', '满功率', '全功率'] as PowerLevel[]).map((v) => (
-                  <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
-                    <input type="radio" name="power" checked={powerLevel === v} onChange={() => setPowerLevel(v)} className="accent-[#00D4FF]" />
-                    <span className={powerLevel === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div>
-              <span className="text-xs text-cyber-dim block mb-2">导出格式</span>
-              <div className="flex gap-3">
-                {['CSV', 'JSON', 'MATLAB'].map((v) => (
-                  <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
-                    <input type="radio" name="format" checked={exportFmt === v} onChange={() => setExportFmt(v)} className="accent-[#00D4FF]" />
-                    <span className={exportFmt === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <button className="cyber-btn-primary flex items-center gap-2" onClick={handleExportData} disabled={exporting}>
-              <Download className="w-4 h-4" />
-              {exporting ? '导出中...' : '导出数据'}
-            </button>
-          </div>
-          <div>
-            <span className="text-xs text-cyber-dim block mb-2">电磁串扰矩阵预览</span>
-            <ReactECharts option={crosstalkOption} style={{ height: 300 }} />
-          </div>
+          )}
         </div>
+        <div className="grid grid-cols-3 gap-4">
+          <motion.div
+            className="glass-card p-3"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+          >
+            <h3 className="text-xs text-cyber-dim mb-2 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyber-orange" />
+              热循环次数 - 寿命曲线
+            </h3>
+            <ReactECharts ref={lifeCycleChartRef} option={lifeCycleOption} style={{ height: 180 }} />
+          </motion.div>
+          <motion.div
+            className="glass-card p-3"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+          >
+            <h3 className="text-xs text-cyber-dim mb-2 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyber-green" />
+              功率档位 - 寿命曲线
+            </h3>
+            <ReactECharts ref={lifePowerChartRef} option={lifePowerOption} style={{ height: 180 }} />
+          </motion.div>
+          <motion.div
+            className="glass-card p-3"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3 }}
+          >
+            <h3 className="text-xs text-cyber-dim mb-2 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyber-purple" />
+              通信频段 - 寿命对比
+            </h3>
+            <ReactECharts ref={lifeBandChartRef} option={lifeBandOption} style={{ height: 180 }} />
+          </motion.div>
+        </div>
+        <div className="mt-3 text-[11px] text-cyber-dim/80 flex items-center gap-3 flex-wrap">
+          <span>💡 基于当前筛选条件：</span>
+          <span>轨道老化系数 x{orbitScale.aging.toFixed(2)}</span>
+          <span>功率老化系数 x{powerScale.aging.toFixed(2)}</span>
+          <span>EMI 裕度系数 x{bandScale.emiMargin.toFixed(2)}</span>
+          <span className="text-cyber-purple/80">基础寿命: 12年</span>
+        </div>
+      </div>
+
+      <div className="glass-card p-4">
+        <h2 className="section-title mb-4">
+          {compareMode ? '工况对比分析' : '数据导出'}
+        </h2>
+
+        {compareMode ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-3 p-3 bg-cyber-blue/5 rounded-lg border border-cyber-blue/20">
+                <div className="text-sm font-semibold text-cyber-blue flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-cyber-blue" />
+                  工况 A
+                </div>
+                <div>
+                  <span className="text-[11px] text-cyber-dim block mb-1.5">轨道阶段</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {(['近地阶段', '转移阶段', '近星阶段', '远星阶段', '全阶段'] as OrbitPhase[]).map((v) => (
+                      <label key={v} className="flex items-center gap-1 cursor-pointer text-[11px]">
+                        <input type="radio" name="orbitA" checked={orbitPhase === v} onChange={() => setOrbitPhase(v)} className="accent-[#00D4FF] scale-90" />
+                        <span className={orbitPhase === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[11px] text-cyber-dim block mb-1.5">通信频段</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {(['S频段', 'X频段', 'Ka频段', '全频段'] as CommBand[]).map((v) => (
+                      <label key={v} className="flex items-center gap-1 cursor-pointer text-[11px]">
+                        <input type="radio" name="bandA" checked={commBand === v} onChange={() => setCommBand(v)} className="accent-[#00D4FF] scale-90" />
+                        <span className={commBand === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[11px] text-cyber-dim block mb-1.5">仪器功率</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {(['低功率', '额定功率', '满功率', '全功率'] as PowerLevel[]).map((v) => (
+                      <label key={v} className="flex items-center gap-1 cursor-pointer text-[11px]">
+                        <input type="radio" name="powerA" checked={powerLevel === v} onChange={() => setPowerLevel(v)} className="accent-[#00D4FF] scale-90" />
+                        <span className={powerLevel === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                {metrics && (
+                  <div className="pt-2 border-t border-deep-500/50 space-y-1.5 text-[11px]">
+                    <div className="flex justify-between"><span className="text-cyber-dim">结温</span><span className="text-cyber-white font-mono">{metrics.junctionTemp}°C</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">应力</span><span className="text-cyber-white font-mono">{metrics.equivalentStress}MPa</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">EMI裕度</span><span className="text-cyber-white font-mono">{metrics.emiMargin}dB</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">热流峰值</span><span className="text-cyber-white font-mono">{metrics.heatFluxPeak}W/m²</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">退化率</span><span className="text-cyber-white font-mono">{metrics.solarCellDegradation}%</span></div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col items-center justify-center p-3">
+                <ArrowUpDown className="w-6 h-6 text-cyber-purple mb-2" />
+                <div className="text-sm font-semibold text-cyber-purple mb-3">差异对比</div>
+                {diffMetrics && (
+                  <div className="space-y-2 w-full">
+                    {[
+                      { label: '结温', diff: diffMetrics.junctionTemp, unit: '°C' },
+                      { label: '应力', diff: diffMetrics.equivalentStress, unit: 'MPa' },
+                      { label: 'EMI裕度', diff: diffMetrics.emiMargin, unit: 'dB' },
+                      { label: '热流峰值', diff: diffMetrics.heatFluxPeak, unit: 'W/m²' },
+                      { label: '退化率', diff: diffMetrics.solarCellDegradation, unit: '%' },
+                    ].map((item) => {
+                      const isPositive = item.diff.percent > 0
+                      const isZero = Math.abs(item.diff.percent) < 0.1
+                      return (
+                        <div key={item.label} className="flex items-center justify-between text-[11px] py-1 px-2 bg-deep-600/30 rounded">
+                          <span className="text-cyber-dim">{item.label}</span>
+                          <div className="flex items-center gap-1">
+                            {isZero ? (
+                              <Minus className="w-3 h-3 text-cyber-dim" />
+                            ) : isPositive ? (
+                              <TrendingUp className="w-3 h-3 text-cyber-red" />
+                            ) : (
+                              <TrendingDown className="w-3 h-3 text-cyber-green" />
+                            )}
+                            <span className={clsx(
+                              'font-mono font-semibold',
+                              isZero ? 'text-cyber-dim' : isPositive ? 'text-cyber-red' : 'text-cyber-green'
+                            )}>
+                              {isPositive ? '+' : ''}{item.diff.value.toFixed(1)}{item.unit}
+                              <span className="text-[10px] ml-1 opacity-80">
+                                ({isPositive ? '+' : ''}{item.diff.percent.toFixed(1)}%)
+                              </span>
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3 p-3 bg-cyber-purple/5 rounded-lg border border-cyber-purple/20">
+                <div className="text-sm font-semibold text-cyber-purple flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-cyber-purple" />
+                  工况 B
+                </div>
+                <div>
+                  <span className="text-[11px] text-cyber-dim block mb-1.5">轨道阶段</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {(['近地阶段', '转移阶段', '近星阶段', '远星阶段', '全阶段'] as OrbitPhase[]).map((v) => (
+                      <label key={v} className="flex items-center gap-1 cursor-pointer text-[11px]">
+                        <input type="radio" name="orbitB" checked={orbitPhase2 === v} onChange={() => setOrbitPhase2(v)} className="accent-[#7B61FF] scale-90" />
+                        <span className={orbitPhase2 === v ? 'text-cyber-purple' : 'text-cyber-dim'}>{v}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[11px] text-cyber-dim block mb-1.5">通信频段</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {(['S频段', 'X频段', 'Ka频段', '全频段'] as CommBand[]).map((v) => (
+                      <label key={v} className="flex items-center gap-1 cursor-pointer text-[11px]">
+                        <input type="radio" name="bandB" checked={commBand2 === v} onChange={() => setCommBand2(v)} className="accent-[#7B61FF] scale-90" />
+                        <span className={commBand2 === v ? 'text-cyber-purple' : 'text-cyber-dim'}>{v}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[11px] text-cyber-dim block mb-1.5">仪器功率</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {(['低功率', '额定功率', '满功率', '全功率'] as PowerLevel[]).map((v) => (
+                      <label key={v} className="flex items-center gap-1 cursor-pointer text-[11px]">
+                        <input type="radio" name="powerB" checked={powerLevel2 === v} onChange={() => setPowerLevel2(v)} className="accent-[#7B61FF] scale-90" />
+                        <span className={powerLevel2 === v ? 'text-cyber-purple' : 'text-cyber-dim'}>{v}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                {metrics2 && (
+                  <div className="pt-2 border-t border-deep-500/50 space-y-1.5 text-[11px]">
+                    <div className="flex justify-between"><span className="text-cyber-dim">结温</span><span className="text-cyber-white font-mono">{metrics2.junctionTemp}°C</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">应力</span><span className="text-cyber-white font-mono">{metrics2.equivalentStress}MPa</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">EMI裕度</span><span className="text-cyber-white font-mono">{metrics2.emiMargin}dB</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">热流峰值</span><span className="text-cyber-white font-mono">{metrics2.heatFluxPeak}W/m²</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">退化率</span><span className="text-cyber-white font-mono">{metrics2.solarCellDegradation}%</span></div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="glass-card p-3">
+                <h4 className="text-xs text-cyber-dim mb-2">工况A - 串扰矩阵</h4>
+                <ReactECharts option={{
+                  tooltip: { position: 'top' },
+                  grid: { top: 5, right: 5, bottom: 25, left: 45 },
+                  xAxis: { type: 'category', data: SUBSYSTEMS, axisLabel: { color: '#6B7394', fontSize: 9 } },
+                  yAxis: { type: 'category', data: SUBSYSTEMS, axisLabel: { color: '#6B7394', fontSize: 9 } },
+                  visualMap: { min: 0, max: 0.75, show: false, inRange: { color: ['#0A0E1A', '#00D4FF', '#FF2D55'] } },
+                  series: [{ type: 'heatmap', data: crosstalkData, label: { show: true, color: '#E8EDF5', fontSize: 8 } }],
+                }} style={{ height: 220 }} />
+              </div>
+              <div className="glass-card p-3">
+                <h4 className="text-xs text-cyber-dim mb-2">工况B - 串扰矩阵</h4>
+                <ReactECharts option={{
+                  tooltip: { position: 'top' },
+                  grid: { top: 5, right: 5, bottom: 25, left: 45 },
+                  xAxis: { type: 'category', data: SUBSYSTEMS, axisLabel: { color: '#6B7394', fontSize: 9 } },
+                  yAxis: { type: 'category', data: SUBSYSTEMS, axisLabel: { color: '#6B7394', fontSize: 9 } },
+                  visualMap: { min: 0, max: 0.75, show: false, inRange: { color: ['#0A0E1A', '#7B61FF', '#FF2D55'] } },
+                  series: [{ type: 'heatmap', data: crosstalkData2, label: { show: true, color: '#E8EDF5', fontSize: 8 } }],
+                }} style={{ height: 220 }} />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-cyber-dim">导出格式:</span>
+                {['CSV', 'JSON'].map((v) => (
+                  <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                    <input type="radio" name="compareFmt" checked={compareExportFmt === v} onChange={() => setCompareExportFmt(v)} className="accent-[#7B61FF]" />
+                    <span className={compareExportFmt === v ? 'text-cyber-purple' : 'text-cyber-dim'}>{v}</span>
+                  </label>
+                ))}
+              </div>
+              <button
+                className="cyber-btn-primary flex items-center gap-2 ml-auto"
+                onClick={handleExportCompare}
+                disabled={exporting}
+                style={{ background: 'linear-gradient(135deg, #7B61FF, #00D4FF)' }}
+              >
+                <Download className="w-4 h-4" />
+                {exporting ? '导出中...' : '导出对比报告'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div>
+                <span className="text-xs text-cyber-dim block mb-2">轨道阶段</span>
+                <div className="flex gap-3 flex-wrap">
+                  {(['近地阶段', '转移阶段', '近星阶段', '远星阶段', '全阶段'] as OrbitPhase[]).map((v) => (
+                    <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                      <input type="radio" name="orbit" checked={orbitPhase === v} onChange={() => setOrbitPhase(v)} className="accent-[#00D4FF]" />
+                      <span className={orbitPhase === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs text-cyber-dim block mb-2">通信频段</span>
+                <div className="flex gap-3 flex-wrap">
+                  {(['S频段', 'X频段', 'Ka频段', '全频段'] as CommBand[]).map((v) => (
+                    <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                      <input type="radio" name="band" checked={commBand === v} onChange={() => setCommBand(v)} className="accent-[#00D4FF]" />
+                      <span className={commBand === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs text-cyber-dim block mb-2">仪器功率</span>
+                <div className="flex gap-3 flex-wrap">
+                  {(['低功率', '额定功率', '满功率', '全功率'] as PowerLevel[]).map((v) => (
+                    <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                      <input type="radio" name="power" checked={powerLevel === v} onChange={() => setPowerLevel(v)} className="accent-[#00D4FF]" />
+                      <span className={powerLevel === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs text-cyber-dim block mb-2">导出格式</span>
+                <div className="flex gap-3">
+                  {['CSV', 'JSON', 'MATLAB'].map((v) => (
+                    <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                      <input type="radio" name="format" checked={exportFmt === v} onChange={() => setExportFmt(v)} className="accent-[#00D4FF]" />
+                      <span className={exportFmt === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <button className="cyber-btn-primary flex items-center gap-2" onClick={handleExportData} disabled={exporting}>
+                <Download className="w-4 h-4" />
+                {exporting ? '导出中...' : '导出数据'}
+              </button>
+            </div>
+            <div>
+              <span className="text-xs text-cyber-dim block mb-2">电磁串扰矩阵预览</span>
+              <ReactECharts option={crosstalkOption} style={{ height: 300 }} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
