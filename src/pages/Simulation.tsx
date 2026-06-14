@@ -30,11 +30,46 @@ const STATUS_ORDER: TaskStatus[] = [
   'completed',
 ]
 
-const UPLOAD_ZONES: { icon: React.ElementType; label: string; accept: string; category: UploadCategory; hint: string }[] = [
-  { icon: Box, label: '航天器三维几何', accept: '.step,.STP,.stl,.STL', category: 'geometry', hint: '支持 STEP/STL 格式' },
-  { icon: Flame, label: '材料热物性', accept: '.csv,.json', category: 'material', hint: '支持 CSV/JSON 格式' },
-  { icon: Orbit, label: '轨道热流数据', accept: '.csv', category: 'orbit', hint: '支持 CSV 格式' },
-  { icon: Cpu, label: '载荷电子参数', accept: '.csv,.json', category: 'electronic', hint: '支持 CSV/JSON 格式' },
+const UPLOAD_ZONES: {
+  icon: React.ElementType
+  label: string
+  accept: string
+  formats: string
+  category: UploadCategory
+  hint: string
+}[] = [
+  {
+    icon: Box,
+    label: '航天器三维几何',
+    accept: '.step,.stp,.STEP,.STP,.iges,.igs,.IGES,.IGS,.stl,.STL',
+    formats: 'IGES/IGS, STEP/STP, STL',
+    category: 'geometry',
+    hint: '工程格式：IGES/IGS/STEP/STP/STL',
+  },
+  {
+    icon: Flame,
+    label: '材料热物性',
+    accept: '.mat,.MAT,.json,.JSON',
+    formats: 'MAT, JSON',
+    category: 'material',
+    hint: '工程格式：MAT / JSON',
+  },
+  {
+    icon: Orbit,
+    label: '轨道热流数据',
+    accept: '.spk,.SPK,.oem,.OEM,.sp3,.SP3,.csv,.CSV',
+    formats: 'SPK, OEM, SP3, CSV',
+    category: 'orbit',
+    hint: '工程格式：SPK / OEM / SP3 / CSV',
+  },
+  {
+    icon: Cpu,
+    label: '载荷电子参数',
+    accept: '.ibis,.IBIS,.s2p,.S2P,.s3p,.S3P,.s4p,.S4P,.s5p,.S5P,.s6p,.S6P,.snp,.SNP,.cir,.CIR,.json,.JSON',
+    formats: 'IBIS, Touchstone S-parameter (S2P~S6P), CIR, JSON',
+    category: 'electronic',
+    hint: '工程格式：IBIS / S2P S3P S4P S5P S6P / CIR / JSON',
+  },
 ]
 
 function formatFileSize(bytes: number): string {
@@ -47,6 +82,7 @@ function UploadZone({
   icon: Icon,
   label,
   accept,
+  formats,
   category,
   hint,
   taskId,
@@ -54,6 +90,7 @@ function UploadZone({
   icon: React.ElementType
   label: string
   accept: string
+  formats: string
   category: UploadCategory
   hint: string
   taskId: string
@@ -64,18 +101,25 @@ function UploadZone({
   const { uploadedFiles, uploadFile, clearUploadedFiles } = useStore()
   const files = uploadedFiles[taskId]?.[category] ?? []
 
-  const acceptList = accept.toLowerCase().split(',').map((s) => s.trim().replace(/^\./, ''))
+  const acceptList = accept
+    .toLowerCase()
+    .split(',')
+    .map((s) => s.trim().replace(/^\./, ''))
+    .filter(Boolean)
 
   const handleFile = useCallback(
     (file: File) => {
       setError(null)
-      const ext = file.name.toLowerCase().split('.').pop() || ''
-      if (!acceptList.includes(ext)) {
-        setError(`不支持的文件格式 .${ext}，期望: ${accept}`)
+      const nameParts = file.name.toLowerCase().split('.')
+      const ext = nameParts.length > 1 ? nameParts.pop() || '' : ''
+      if (!ext || !acceptList.includes(ext)) {
+        setError(
+          `不支持的文件格式"${file.name}"。\n支持格式: ${formats}`,
+        )
         return
       }
       if (file.size === 0) {
-        setError('文件为空，请重新选择')
+        setError(`文件"${file.name}"为空，请选择非空的工程文件`)
         return
       }
       uploadFile(taskId, category, {
@@ -85,7 +129,7 @@ function UploadZone({
         uploadedAt: new Date().toISOString(),
       })
     },
-    [acceptList, accept, category, taskId, uploadFile],
+    [acceptList, formats, category, taskId, uploadFile],
   )
 
   const onDrop = useCallback(

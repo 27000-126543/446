@@ -4,57 +4,122 @@ import ReactECharts from 'echarts-for-react'
 import { FileText, Download, Filter, ChevronDown } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import jsPDF from 'jspdf'
+import type { SimulationTask } from '@/types'
 
 const SUBSYSTEMS = ['电源', '通信', '热控', '姿控', '推进', '测控', '数管', '有效载荷']
 
-function genHeatmap10x10(seed: string) {
+type OrbitPhase = '全阶段' | '近地阶段' | '转移阶段' | '近星阶段' | '远星阶段'
+type CommBand = '全频段' | 'S频段' | 'X频段' | 'Ka频段'
+type PowerLevel = '全功率' | '低功率' | '额定功率' | '满功率'
+
+const ORBIT_SCALING: Record<OrbitPhase, { thermal: number; displacement: number; emi: number; jitter: number; aging: number; label: string }> = {
+  '全阶段':   { thermal: 1.00, displacement: 1.00, emi: 1.00, jitter: 1.00, aging: 1.00, label: '综合工况' },
+  '近地阶段': { thermal: 0.85, displacement: 0.80, emi: 0.90, jitter: 0.75, aging: 0.70, label: 'LEO - 低轨道，地磁屏蔽完善，负荷较低' },
+  '转移阶段': { thermal: 1.10, displacement: 1.15, emi: 1.15, jitter: 1.25, aging: 1.20, label: 'GTO/Trans-Lunar - 穿越范艾伦带，辐射加剧' },
+  '近星阶段': { thermal: 1.30, displacement: 1.25, emi: 1.20, jitter: 1.15, aging: 1.40, label: 'Near-Planet - 近体气动/引力梯度，热流最高' },
+  '远星阶段': { thermal: 0.75, displacement: 0.90, emi: 1.30, jitter: 1.45, aging: 1.15, label: 'Deep Space - 低温背景，通信距离最远' },
+}
+
+const BAND_SCALING: Record<CommBand, { crosstalk: number; emiMargin: number; jitter: number; label: string; freqGHz: string }> = {
+  '全频段': { crosstalk: 1.00, emiMargin: 1.00, jitter: 1.00, label: '全频段覆盖', freqGHz: '综合' },
+  'S频段':   { crosstalk: 0.75, emiMargin: 1.30, jitter: 0.70, label: 'S 频段 (2-4 GHz) - 低串扰遥测链路', freqGHz: '2~4' },
+  'X频段':   { crosstalk: 1.00, emiMargin: 1.00, jitter: 1.00, label: 'X 频段 (8-12 GHz) - 主力数传链路', freqGHz: '8~12' },
+  'Ka频段':  { crosstalk: 1.55, emiMargin: 0.70, jitter: 1.50, label: 'Ka 频段 (27-40 GHz) - 高速数传，电磁环境严酷', freqGHz: '27~40' },
+}
+
+const POWER_SCALING: Record<PowerLevel, { thermal: number; displacement: number; emi: number; aging: number; label: string; loadFactor: number }> = {
+  '全功率':   { thermal: 1.00, displacement: 1.00, emi: 1.00, aging: 1.00, label: '全功率包络', loadFactor: 1.00 },
+  '低功率':   { thermal: 0.62, displacement: 0.55, emi: 0.70, aging: 0.55, label: '待机/安全模式 - 低负荷', loadFactor: 0.35 },
+  '额定功率': { thermal: 1.00, displacement: 1.00, emi: 1.00, aging: 1.00, label: '额定工作点 - 设计基线', loadFactor: 0.75 },
+  '满功率':   { thermal: 1.35, displacement: 1.28, emi: 1.30, aging: 1.48, label: '载荷全开工况 - 热/力/EMI 三临界', loadFactor: 1.00 },
+}
+
+function hashCode(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+function seededRandom(seed: number) {
+  let s = seed || 1
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0
+    return (s & 0xffffffff) / 0xffffffff
+  }
+}
+
+function genHeatmap10x10(seed: string, scale: number) {
+  const rand = seededRandom(hashCode(seed))
   const data: number[][] = []
-  let s = 0
-  for (let i = 0; i < seed.length; i++) s += seed.charCodeAt(i)
   for (let y = 0; y < 10; y++) for (let x = 0; x < 10; x++) {
-    const v = (Math.sin(s + x * 1.3 + y * 0.7) * 0.5 + 0.5) * 80 + 20
-    data.push([x, y, +v.toFixed(1)])
+    const base = 35 + rand() * 45
+    const v = base * scale
+    data.push([x, y, +Math.min(115, Math.max(15, v)).toFixed(1)])
   }
   return data
 }
 
-function genDisplacementField(seed: string) {
+function genDisplacementField(seed: string, scale: number) {
+  const rand = seededRandom(hashCode(seed) ^ 0x9e3779b9)
   const data: number[][] = []
-  let s = 0
-  for (let i = 0; i < seed.length; i++) s += seed.charCodeAt(i)
   for (let y = 0; y < 10; y++) for (let x = 0; x < 10; x++) {
-    const v = (Math.sin(s * 0.5 + x + y * 0.3) * 0.5 + 0.5) * 0.5
-    data.push([x, y, +v.toFixed(3)])
+    const base = 0.05 + rand() * 0.35
+    const v = base * scale
+    data.push([x, y, +Math.min(0.8, Math.max(0.005, v)).toFixed(3)])
   }
   return data
 }
 
-function genJitterSignal(seed: string) {
-  let s = 0
-  for (let i = 0; i < seed.length; i++) s += seed.charCodeAt(i)
-  const base = Array.from({ length: 100 }, (_, i) => Math.sin(i / 5 + s) * 50)
-  return base.map((v) => +(v + (Math.random() - 0.5) * 30).toFixed(2))
+function genJitterSignal(seed: string, scale: number) {
+  const rand = seededRandom(hashCode(seed) ^ 0x85ebca6b)
+  const signal: number[] = []
+  for (let i = 0; i < 100; i++) {
+    const wave = Math.sin(i / 5) * 50 + Math.cos(i / 13) * 20
+    const noise = (rand() - 0.5) * 60 * scale
+    signal.push(+(wave + noise).toFixed(2))
+  }
+  return signal
 }
 
-function genAgingCurves(seed: string) {
-  let s = 0
-  for (let i = 0; i < seed.length; i++) s += seed.charCodeAt(i)
+function genAgingCurves(seed: string, scale: number) {
+  const rand = seededRandom(hashCode(seed) ^ 0xc2b2ae35)
   const cycles = Array.from({ length: 50 }, (_, i) => i + 1)
-  const thermal = cycles.map((c) => +(100 - c * 0.8 + Math.sin(s + c * 0.3) * 3).toFixed(1))
-  const mechanical = cycles.map((c) => +(90 - c * 0.6 + Math.cos(s + c * 0.2) * 2.5).toFixed(1))
-  const electrical = cycles.map((c) => +(95 - c * 0.9 + Math.sin(s * 1.2 + c * 0.25) * 3.5).toFixed(1))
+  const thermal    = cycles.map((c) => +(100 - c * 0.8 * scale + (rand() - 0.5) * 6).toFixed(1))
+  const mechanical = cycles.map((c) => +(92  - c * 0.6 * scale + (rand() - 0.5) * 5).toFixed(1))
+  const electrical = cycles.map((c) => +(96  - c * 0.9 * scale + (rand() - 0.5) * 7).toFixed(1))
   return { cycles, thermal, mechanical, electrical }
 }
 
-function genCrosstalkMatrix(seed: string) {
-  let s = 0
-  for (let i = 0; i < seed.length; i++) s += seed.charCodeAt(i)
+function genCrosstalkMatrix(seed: string, scale: number) {
+  const rand = seededRandom(hashCode(seed) ^ 0xf61e5f5b)
   const data: number[][] = []
   for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
-    const v = x === y ? 1 : +((Math.abs(Math.sin(s + x + y * 1.1)) * 0.5).toFixed(3))
-    data.push([x, y, v])
+    if (x === y) {
+      data.push([x, y, 1])
+    } else {
+      const base = 0.02 + rand() * 0.25
+      const v = Math.min(0.75, base * scale)
+      data.push([x, y, +v.toFixed(3)])
+    }
   }
   return data
+}
+
+function deriveMetrics(task: SimulationTask, orbitKey: OrbitPhase, bandKey: CommBand, powerKey: PowerLevel) {
+  const orbit = ORBIT_SCALING[orbitKey]
+  const band = BAND_SCALING[bandKey]
+  const power = POWER_SCALING[powerKey]
+  const baseLifeYears = 12
+  return {
+    junctionTemp:     +(task.junctionTemp     * power.thermal  * orbit.thermal).toFixed(1),
+    equivalentStress: +(task.equivalentStress * power.displacement * orbit.displacement).toFixed(1),
+    emiMargin:        +(task.emiMargin        * band.emiMargin / Math.max(0.6, power.emi)).toFixed(1),
+    heatFluxPeak:     +(1250 * power.thermal * orbit.thermal).toFixed(0),
+    solarCellDegradation: +(baseLifeYears * 1.1 * orbit.aging * power.aging).toFixed(2),
+  }
 }
 
 function sanitizeFilename(s: string) {
@@ -67,9 +132,9 @@ export default function Reports() {
   const [generating, setGenerating] = useState(false)
   const [progress, setProgress] = useState(0)
   const [generated, setGenerated] = useState(false)
-  const [orbitPhase, setOrbitPhase] = useState('全阶段')
-  const [commBand, setCommBand] = useState('全频段')
-  const [powerLevel, setPowerLevel] = useState('全功率')
+  const [orbitPhase, setOrbitPhase] = useState<OrbitPhase>('全阶段')
+  const [commBand, setCommBand] = useState<CommBand>('全频段')
+  const [powerLevel, setPowerLevel] = useState<PowerLevel>('全功率')
   const [exportFmt, setExportFmt] = useState('CSV')
   const [exporting, setExporting] = useState(false)
   const tempChartRef = useRef<ReactECharts>(null)
@@ -78,41 +143,70 @@ export default function Reports() {
   const agingChartRef = useRef<ReactECharts>(null)
 
   const task = tasks.find((t) => t.id === selectedTask)
-  const seedKey = selectedTask + '-' + orbitPhase
 
-  const tempData = useMemo(() => genHeatmap10x10(seedKey), [seedKey])
-  const dispData = useMemo(() => genDisplacementField(seedKey), [seedKey])
-  const jitterData = useMemo(() => genJitterSignal(seedKey), [seedKey])
-  const agingData = useMemo(() => genAgingCurves(seedKey), [seedKey])
-  const crosstalkData = useMemo(() => genCrosstalkMatrix(seedKey), [seedKey])
+  // 关键修复：seedKey 必须包含所有三个筛选维度，确保切换任意筛选都即时重新生成数据（问题4）
+  const seedKey = useMemo(
+    () => `${selectedTask}|${orbitPhase}|${commBand}|${powerLevel}|v2`,
+    [selectedTask, orbitPhase, commBand, powerLevel],
+  )
 
-  const tempOption = {
+  const orbitScale = ORBIT_SCALING[orbitPhase]
+  const bandScale = BAND_SCALING[commBand]
+  const powerScale = POWER_SCALING[powerLevel]
+
+  // 所有可视化数据随筛选即时变化（useMemo 依赖 seedKey，保证一致性）
+  const tempData = useMemo(
+    () => genHeatmap10x10(seedKey + ':T', orbitScale.thermal * powerScale.thermal),
+    [seedKey, orbitScale.thermal, powerScale.thermal],
+  )
+  const dispData = useMemo(
+    () => genDisplacementField(seedKey + ':D', orbitScale.displacement * powerScale.displacement),
+    [seedKey, orbitScale.displacement, powerScale.displacement],
+  )
+  const jitterData = useMemo(
+    () => genJitterSignal(seedKey + ':J', bandScale.jitter * orbitScale.jitter),
+    [seedKey, bandScale.jitter, orbitScale.jitter],
+  )
+  const agingData = useMemo(
+    () => genAgingCurves(seedKey + ':A', orbitScale.aging * powerScale.aging),
+    [seedKey, orbitScale.aging, powerScale.aging],
+  )
+  const crosstalkData = useMemo(
+    () => genCrosstalkMatrix(seedKey + ':E', bandScale.crosstalk),
+    [seedKey, bandScale.crosstalk],
+  )
+  const metrics = useMemo(
+    () => task ? deriveMetrics(task, orbitPhase, commBand, powerLevel) : null,
+    [task, orbitPhase, commBand, powerLevel],
+  )
+
+  const tempOption = useMemo(() => ({
     tooltip: { position: 'top' },
     grid: { top: 10, right: 10, bottom: 30, left: 40 },
     xAxis: { type: 'category', data: Array.from({ length: 10 }, (_, i) => i) },
     yAxis: { type: 'category', data: Array.from({ length: 10 }, (_, i) => i) },
-    visualMap: { min: 20, max: 100, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#0A0E1A', '#00D4FF', '#FF6B35', '#FF2D55'] }, textStyle: { color: '#6B7394' } },
+    visualMap: { min: 15, max: 115, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#0A0E1A', '#00D4FF', '#FF6B35', '#FF2D55'] }, textStyle: { color: '#6B7394' } },
     series: [{ type: 'heatmap', data: tempData, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }],
-  }
+  }), [tempData])
 
-  const dispOption = {
+  const dispOption = useMemo(() => ({
     tooltip: { position: 'top' },
     grid: { top: 10, right: 10, bottom: 30, left: 40 },
     xAxis: { type: 'category', data: Array.from({ length: 10 }, (_, i) => i) },
     yAxis: { type: 'category', data: Array.from({ length: 10 }, (_, i) => i) },
-    visualMap: { min: 0, max: 0.5, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#151B36', '#7B61FF', '#00E5A0'] }, textStyle: { color: '#6B7394' } },
+    visualMap: { min: 0, max: 0.8, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#151B36', '#7B61FF', '#00E5A0'] }, textStyle: { color: '#6B7394' } },
     series: [{ type: 'heatmap', data: dispData, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }],
-  }
+  }), [dispData])
 
-  const jitterOption = {
+  const jitterOption = useMemo(() => ({
     tooltip: { trigger: 'axis' },
     grid: { top: 10, right: 10, bottom: 30, left: 40 },
     xAxis: { type: 'category', data: Array.from({ length: 100 }, (_, i) => i), axisLabel: { color: '#6B7394' } },
     yAxis: { type: 'value', axisLabel: { color: '#6B7394' }, splitLine: { lineStyle: { color: '#252E52' } } },
     series: [{ type: 'line', data: jitterData, showSymbol: false, lineStyle: { color: '#00D4FF', width: 1 }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(0,212,255,0.3)' }, { offset: 1, color: 'rgba(0,212,255,0)' }] } } }],
-  }
+  }), [jitterData])
 
-  const agingOption = {
+  const agingOption = useMemo(() => ({
     tooltip: { trigger: 'axis' },
     legend: { data: ['热退化', '力退化', '电退化'], textStyle: { color: '#6B7394' }, top: 0 },
     grid: { top: 30, right: 10, bottom: 30, left: 40 },
@@ -123,16 +217,16 @@ export default function Reports() {
       { name: '力退化', type: 'line', data: agingData.mechanical, lineStyle: { color: '#7B61FF' }, itemStyle: { color: '#7B61FF' } },
       { name: '电退化', type: 'line', data: agingData.electrical, lineStyle: { color: '#00E5A0' }, itemStyle: { color: '#00E5A0' } },
     ],
-  }
+  }), [agingData])
 
-  const crosstalkOption = {
+  const crosstalkOption = useMemo(() => ({
     tooltip: { position: 'top' },
     grid: { top: 10, right: 10, bottom: 40, left: 60 },
     xAxis: { type: 'category', data: SUBSYSTEMS, axisLabel: { color: '#6B7394', fontSize: 10 } },
     yAxis: { type: 'category', data: SUBSYSTEMS, axisLabel: { color: '#6B7394', fontSize: 10 } },
-    visualMap: { min: 0, max: 1, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#0A0E1A', '#00D4FF', '#FF2D55'] }, textStyle: { color: '#6B7394' } },
+    visualMap: { min: 0, max: 0.75, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#0A0E1A', '#00D4FF', '#FF2D55'] }, textStyle: { color: '#6B7394' } },
     series: [{ type: 'heatmap', data: crosstalkData, label: { show: true, color: '#E8EDF5', fontSize: 9 }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }],
-  }
+  }), [crosstalkData])
 
   function captureChart(ref: React.RefObject<ReactECharts>) {
     try {
@@ -163,7 +257,7 @@ export default function Reports() {
   }
 
   function handleDownloadPdf() {
-    if (!task) return
+    if (!task || !metrics) return
     const doc = new jsPDF({ unit: 'pt', format: 'a4', compress: true })
     const pageWidth = doc.internal.pageSize.getWidth()
     const pageHeight = doc.internal.pageSize.getHeight()
@@ -183,73 +277,77 @@ export default function Reports() {
     doc.text(`Model: ${task.modelName}`, 40, 92)
     doc.text(`Task ID: ${task.id}`, 40, 109)
     doc.text(`Generated: ${new Date().toLocaleString('zh-CN')}`, 40, 126)
-    doc.text(`Orbit Phase: ${orbitPhase} | Comm Band: ${commBand} | Power: ${powerLevel}`, 40, 143)
+    doc.text(`Orbit: ${orbitPhase} [${orbitScale.label}]`, 40, 143)
+    doc.text(`Comm : ${commBand} [${bandScale.label}]`, 40, 160)
+    doc.text(`Power: ${powerLevel} [${powerScale.label}]`, 40, 177)
 
     doc.setDrawColor(0, 212, 255, 0.4)
-    doc.line(40, 155, pageWidth - 40, 155)
+    doc.line(40, 189, pageWidth - 40, 189)
 
     doc.setTextColor(0, 212, 255)
     doc.setFontSize(12)
     doc.setFont('helvetica', 'bold')
-    doc.text('Key Simulation Metrics', 40, 175)
+    doc.text('Key Simulation Metrics (筛选后)', 40, 209)
 
     doc.setFillColor(21, 27, 54)
-    doc.roundedRect(40, 185, 155, 60, 4, 4, 'F')
-    doc.setFillColor(21, 27, 54)
-    doc.roundedRect(205, 185, 155, 60, 4, 4, 'F')
-    doc.roundedRect(370, 185, 155, 60, 4, 4, 'F')
+    doc.roundedRect(40, 219, 155, 68, 4, 4, 'F')
+    doc.roundedRect(205, 219, 155, 68, 4, 4, 'F')
+    doc.roundedRect(370, 219, 155, 68, 4, 4, 'F')
 
     doc.setTextColor(232, 237, 245)
     doc.setFontSize(9)
-    doc.text('Junction Temp', 55, 205)
+    doc.text('Junction Temp', 55, 239)
     doc.setFontSize(18)
     doc.setFont('helvetica', 'bold')
-    if (task.junctionTemp > 85) {
+    if (metrics.junctionTemp > 85) {
       doc.setTextColor(255, 45, 85)
     } else {
       doc.setTextColor(0, 229, 160)
     }
-    doc.text(`${task.junctionTemp.toFixed(1)} C`, 55, 228)
+    doc.text(`${metrics.junctionTemp.toFixed(1)} C`, 55, 262)
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(107, 115, 148)
-    doc.text('Threshold: 85C', 55, 238)
+    doc.text(`Peak Heat Flux: ${metrics.heatFluxPeak} W/m2`, 55, 279)
+    doc.text('Threshold: 85C', 55, 282)
 
     doc.setTextColor(232, 237, 245)
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
-    doc.text('Equivalent Stress', 220, 205)
+    doc.text('Equivalent Stress', 220, 239)
     doc.setFontSize(18)
     doc.setFont('helvetica', 'bold')
-    if (task.equivalentStress > 250) {
+    if (metrics.equivalentStress > 250) {
       doc.setTextColor(255, 107, 53)
     } else {
       doc.setTextColor(0, 229, 160)
     }
-    doc.text(`${task.equivalentStress.toFixed(1)} MPa`, 220, 228)
+    doc.text(`${metrics.equivalentStress.toFixed(1)} MPa`, 220, 262)
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(107, 115, 148)
-    doc.text('Threshold: 250MPa', 220, 238)
+    doc.text(`Load Factor: ${Math.round(powerScale.loadFactor * 100)}%`, 220, 279)
+    doc.text('Threshold: 250MPa', 220, 282)
 
     doc.setTextColor(232, 237, 245)
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
-    doc.text('EMI Margin', 385, 205)
+    doc.text('EMI Margin', 385, 239)
     doc.setFontSize(18)
     doc.setFont('helvetica', 'bold')
-    if (task.emiMargin < 6) {
+    if (metrics.emiMargin < 6) {
       doc.setTextColor(255, 107, 53)
     } else {
       doc.setTextColor(0, 229, 160)
     }
-    doc.text(`${task.emiMargin.toFixed(1)} dB`, 385, 228)
+    doc.text(`${metrics.emiMargin.toFixed(1)} dB`, 385, 262)
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(107, 115, 148)
-    doc.text('Threshold: 6dB', 385, 238)
+    doc.text(`Freq Band: ${bandScale.freqGHz} GHz`, 385, 279)
+    doc.text('Threshold: 6dB', 385, 282)
 
-    let yCursor = 270
+    let yCursor = 310
 
     const sections: { title: string; chartRef: React.RefObject<ReactECharts>; label: string }[] = [
       { title: 'Temperature Cloud Map', chartRef: tempChartRef, label: '温度云图' },
@@ -343,13 +441,16 @@ export default function Reports() {
   }
 
   function handleExportData() {
-    if (!task || exporting) return
+    if (!task || !metrics || exporting) return
     setExporting(true)
     try {
       const thermalMetrics = {
-        junctionTemp: task.junctionTemp,
-        equivalentStress: task.equivalentStress,
-        emiMargin: task.emiMargin,
+        junctionTemp: metrics.junctionTemp,
+        equivalentStress: metrics.equivalentStress,
+        emiMargin: metrics.emiMargin,
+        peakHeatFlux_Wm2: metrics.heatFluxPeak,
+        solarCellDegradation_pct: metrics.solarCellDegradation,
+        loadFactor_pct: Math.round(powerScale.loadFactor * 100),
         progress: task.progress,
         status: task.status,
       }
@@ -365,7 +466,34 @@ export default function Reports() {
         taskName: task.name,
         modelName: task.modelName,
         exportedAt: new Date().toISOString(),
-        filters: { orbitPhase, commBand, powerLevel },
+        filters: {
+          orbitPhase: {
+            key: orbitPhase,
+            description: orbitScale.label,
+            thermalScale: orbitScale.thermal,
+            displacementScale: orbitScale.displacement,
+            emiScale: orbitScale.emi,
+          },
+          commBand: {
+            key: commBand,
+            description: bandScale.label,
+            frequencyGHz: bandScale.freqGHz,
+            crosstalkScale: bandScale.crosstalk,
+            emiMarginScale: bandScale.emiMargin,
+          },
+          powerLevel: {
+            key: powerLevel,
+            description: powerScale.label,
+            loadFactor: powerScale.loadFactor,
+            thermalScale: powerScale.thermal,
+            displacementScale: powerScale.displacement,
+          },
+        },
+        scalingInfo: {
+          orbit: orbitScale,
+          band: bandScale,
+          power: powerScale,
+        },
         thermalStructuralMetrics: thermalMetrics,
         crosstalkMatrix,
         temperatureGrid: Object.fromEntries(
@@ -393,25 +521,33 @@ export default function Reports() {
         URL.revokeObjectURL(url)
       } else if (exportFmt === 'CSV') {
         const lines: string[] = []
-        lines.push('# Deep Space Simulation Export')
+        lines.push('# Deep Space Simulation Export - 筛选条件已生效')
         lines.push(`Task ID,${task.id}`)
         lines.push(`Task Name,${task.name}`)
         lines.push(`Model,${task.modelName}`)
-        lines.push(`Filters,${orbitPhase}/${commBand}/${powerLevel}`)
+        lines.push(`Filters,Orbit=${orbitPhase} (${orbitScale.label}) | Band=${commBand} (${bandScale.label}) | Power=${powerLevel} (${powerScale.label})`)
         lines.push(`Exported At,${new Date().toISOString()}`)
         lines.push('')
-        lines.push('# Thermal & Structural Metrics')
-        lines.push('JunctionTemp(C),EquivalentStress(MPa),EMIMargin(dB),Progress(%),Status')
-        lines.push(`${task.junctionTemp},${task.equivalentStress},${task.emiMargin},${task.progress},${task.status}`)
+        lines.push('# Scaling Factors (筛选系数)')
+        lines.push('Dimension,Orbit,Comm,Power,Combined')
+        lines.push(`Thermal,${orbitScale.thermal.toFixed(2)},- ,${powerScale.thermal.toFixed(2)},${(orbitScale.thermal * powerScale.thermal).toFixed(2)}`)
+        lines.push(`Displacement,${orbitScale.displacement.toFixed(2)},- ,${powerScale.displacement.toFixed(2)},${(orbitScale.displacement * powerScale.displacement).toFixed(2)}`)
+        lines.push(`EMI Crosstalk,- ,${bandScale.crosstalk.toFixed(2)},- ,${bandScale.crosstalk.toFixed(2)}`)
+        lines.push(`EMI Margin,- ,${bandScale.emiMargin.toFixed(2)},${(1/powerScale.emi).toFixed(2)},${(bandScale.emiMargin/powerScale.emi).toFixed(2)}`)
+        lines.push(`Aging,${orbitScale.aging.toFixed(2)},- ,${powerScale.aging.toFixed(2)},${(orbitScale.aging * powerScale.aging).toFixed(2)}`)
         lines.push('')
-        lines.push('# EMI Crosstalk Matrix (rows x columns)')
+        lines.push('# Thermal & Structural Metrics (after filter scaling)')
+        lines.push('JunctionTemp(C),EquivalentStress(MPa),EMIMargin(dB),PeakHeatFlux(W/m2),SolarDegrad(%),LoadFactor(%),Progress(%),Status')
+        lines.push(`${metrics.junctionTemp},${metrics.equivalentStress},${metrics.emiMargin},${metrics.heatFluxPeak},${metrics.solarCellDegradation},${Math.round(powerScale.loadFactor * 100)},${task.progress},${task.status}`)
+        lines.push('')
+        lines.push('# EMI Crosstalk Matrix (rows x columns) - filtered by Band')
         lines.push(`Source/Target,${SUBSYSTEMS.join(',')}`)
         SUBSYSTEMS.forEach((row) => {
           const vals = SUBSYSTEMS.map((col) => crosstalkMatrix[row][col].toFixed(3))
           lines.push(`${row},${vals.join(',')}`)
         })
         lines.push('')
-        lines.push('# Temperature Grid (10x10, C)')
+        lines.push(`# Temperature Grid (10x10, C) - OrbitThermal=${orbitScale.thermal.toFixed(2)} PowerThermal=${powerScale.thermal.toFixed(2)}`)
         for (let y = 0; y < 10; y++) {
           const row = Array.from({ length: 10 }, (_, x) => (tempData.find((d) => d[0] === x && d[1] === y)?.[2] ?? 0).toFixed(1))
           lines.push(row.join(','))
@@ -428,20 +564,27 @@ export default function Reports() {
         const lines: string[] = []
         lines.push('% Deep Space Simulation MATLAB Export')
         lines.push(`% ${task.name} - ${task.modelName}`)
-        lines.push(`% Filters: ${orbitPhase} / ${commBand} / ${powerLevel}`)
+        lines.push(`% Filters: Orbit=${orbitPhase} (${orbitScale.label}) / Band=${commBand} (${bandScale.label}) / Power=${powerLevel} (${powerScale.label})`)
         lines.push('')
-        lines.push(`metrics.junctionTemp = ${task.junctionTemp};`)
-        lines.push(`metrics.equivalentStress = ${task.equivalentStress};`)
-        lines.push(`metrics.emiMargin = ${task.emiMargin};`)
-        lines.push(`metrics.progress = ${task.progress};`)
+        lines.push('% Scaling factors')
+        lines.push(`orbit_scale.thermal=${orbitScale.thermal}; orbit_scale.displacement=${orbitScale.displacement}; orbit_scale.emi=${orbitScale.emi}; orbit_scale.aging=${orbitScale.aging};`)
+        lines.push(`band_scale.crosstalk=${bandScale.crosstalk}; band_scale.emi_margin=${bandScale.emiMargin}; band_scale.jitter=${bandScale.jitter}; band_scale.freq_GHz='${bandScale.freqGHz}';`)
+        lines.push(`power_scale.thermal=${powerScale.thermal}; power_scale.displacement=${powerScale.displacement}; power_scale.emi=${powerScale.emi}; power_scale.load_factor=${powerScale.loadFactor};`)
         lines.push('')
-        lines.push(`subsystems = ${JSON.stringify(SUBSYSTEMS)};`)
+        lines.push(`metrics.junctionTemp=${metrics.junctionTemp};`)
+        lines.push(`metrics.equivalentStress=${metrics.equivalentStress};`)
+        lines.push(`metrics.emiMargin=${metrics.emiMargin};`)
+        lines.push(`metrics.peakHeatFlux=${metrics.heatFluxPeak};`)
+        lines.push(`metrics.solarDegradation=${metrics.solarCellDegradation};`)
+        lines.push(`metrics.progress=${task.progress};`)
+        lines.push('')
+        lines.push(`subsystems=${JSON.stringify(SUBSYSTEMS)};`)
         const matStr = '[' + SUBSYSTEMS.map((row) => SUBSYSTEMS.map((col) => crosstalkMatrix[row][col].toFixed(3)).join(' ')).join('; ') + ']'
-        lines.push(`crosstalk_matrix = ${matStr};`)
+        lines.push(`crosstalk_matrix=${matStr};`)
         lines.push('')
         lines.push('% Temperature grid (10x10)')
         const tempStr = '[' + Array.from({ length: 10 }, (_, y) => Array.from({ length: 10 }, (_, x) => (tempData.find((d) => d[0] === x && d[1] === y)?.[2] ?? 0).toFixed(1)).join(' ')).join('; ') + ']'
-        lines.push(`temperature_grid = ${tempStr};`)
+        lines.push(`temperature_grid=${tempStr};`)
 
         const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
         const url = URL.createObjectURL(blob)
@@ -479,13 +622,21 @@ export default function Reports() {
             </select>
             <ChevronDown className="w-4 h-4 text-cyber-dim absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
           </div>
-          {task && (
+          {task && metrics && (
             <div className="flex items-center gap-3 text-xs text-cyber-dim ml-auto">
-              <span>结温 <span className="text-cyber-white font-orbitron">{task.junctionTemp}°C</span></span>
-              <span>应力 <span className="text-cyber-white font-orbitron">{task.equivalentStress}MPa</span></span>
-              <span>EMI <span className="text-cyber-white font-orbitron">{task.emiMargin}dB</span></span>
+              <span>结温 <span className="text-cyber-white font-orbitron">{metrics.junctionTemp}°C</span> <span className="text-[10px] opacity-70">(x{(orbitScale.thermal * powerScale.thermal).toFixed(2)})</span></span>
+              <span>应力 <span className="text-cyber-white font-orbitron">{metrics.equivalentStress}MPa</span> <span className="text-[10px] opacity-70">(x{(orbitScale.displacement * powerScale.displacement).toFixed(2)})</span></span>
+              <span>EMI <span className="text-cyber-white font-orbitron">{metrics.emiMargin}dB</span> <span className="text-[10px] opacity-70">(x{(bandScale.emiMargin / powerScale.emi).toFixed(2)})</span></span>
             </div>
           )}
+        </div>
+
+        <div className="flex items-center gap-4 mb-4 text-[11px] flex-wrap">
+          <span className="px-2 py-1 rounded bg-deep-700/60 text-cyber-dim">📡 {bandScale.label}</span>
+          <span className="px-2 py-1 rounded bg-deep-700/60 text-cyber-dim">🛰️ {orbitScale.label}</span>
+          <span className="px-2 py-1 rounded bg-deep-700/60 text-cyber-dim">⚡ {powerScale.label}</span>
+          <span className="text-cyber-dim">串扰系数: <span className="text-cyber-blue">x{bandScale.crosstalk.toFixed(2)}</span></span>
+          <span className="text-cyber-dim">热流系数: <span className="text-cyber-purple">x{(orbitScale.thermal * powerScale.thermal).toFixed(2)}</span></span>
         </div>
 
         <div className="grid grid-cols-2 gap-4 mb-4">
@@ -536,8 +687,8 @@ export default function Reports() {
           <div className="space-y-4">
             <div>
               <span className="text-xs text-cyber-dim block mb-2">轨道阶段</span>
-              <div className="flex gap-3">
-                {['日食', '日照', '全阶段'].map((v) => (
+              <div className="flex gap-3 flex-wrap">
+                {(['近地阶段', '转移阶段', '近星阶段', '远星阶段', '全阶段'] as OrbitPhase[]).map((v) => (
                   <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
                     <input type="radio" name="orbit" checked={orbitPhase === v} onChange={() => setOrbitPhase(v)} className="accent-[#00D4FF]" />
                     <span className={orbitPhase === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
@@ -548,7 +699,7 @@ export default function Reports() {
             <div>
               <span className="text-xs text-cyber-dim block mb-2">通信频段</span>
               <div className="flex gap-3 flex-wrap">
-                {['S频段', 'X频段', 'Ka频段', '全频段'].map((v) => (
+                {(['S频段', 'X频段', 'Ka频段', '全频段'] as CommBand[]).map((v) => (
                   <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
                     <input type="radio" name="band" checked={commBand === v} onChange={() => setCommBand(v)} className="accent-[#00D4FF]" />
                     <span className={commBand === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
@@ -558,8 +709,8 @@ export default function Reports() {
             </div>
             <div>
               <span className="text-xs text-cyber-dim block mb-2">仪器功率</span>
-              <div className="flex gap-3">
-                {['低功率', '额定功率', '全功率'].map((v) => (
+              <div className="flex gap-3 flex-wrap">
+                {(['低功率', '额定功率', '满功率', '全功率'] as PowerLevel[]).map((v) => (
                   <label key={v} className="flex items-center gap-1.5 cursor-pointer text-sm">
                     <input type="radio" name="power" checked={powerLevel === v} onChange={() => setPowerLevel(v)} className="accent-[#00D4FF]" />
                     <span className={powerLevel === v ? 'text-cyber-blue' : 'text-cyber-dim'}>{v}</span>
