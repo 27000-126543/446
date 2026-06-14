@@ -42,8 +42,13 @@ function AnomalyIndicator({ count }: { count: number }) {
 
 function ModelCard({ model, taskCount }: { model: SpacecraftModel; taskCount: number }) {
   const navigate = useNavigate()
-  const { suspendModel, activateModel } = useStore()
+  const { suspendModel, activateModel, setFilterModelId } = useStore()
   const isSuspended = model.status === 'suspended'
+
+  const handleViewTasks = () => {
+    setFilterModelId(model.id)
+    navigate('/dashboard')
+  }
 
   return (
     <motion.div
@@ -101,7 +106,7 @@ function ModelCard({ model, taskCount }: { model: SpacecraftModel; taskCount: nu
 
       <div className="flex items-center gap-2 pt-1 border-t border-deep-500/40">
         <button
-          onClick={() => navigate(`/dashboard?modelId=${model.id}`)}
+          onClick={handleViewTasks}
           className="cyber-btn text-xs flex items-center gap-1 flex-1 justify-center"
         >
           <ListChecks className="w-3.5 h-3.5" />
@@ -209,11 +214,22 @@ function NewModelDialog({
 }) {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
+  const { addModel } = useStore()
 
   if (!open) return null
 
   const handleCreate = () => {
     if (!name.trim()) return
+    const model: SpacecraftModel = {
+      id: `model-${Date.now()}`,
+      name: name.trim(),
+      status: 'active',
+      consecutiveAnomalies: 0,
+      createdBy: '当前用户',
+      createdAt: new Date().toISOString(),
+      description: desc.trim() || `${name.trim()} - 深空探测器型号`,
+    }
+    addModel(model)
     onClose()
     setName('')
     setDesc('')

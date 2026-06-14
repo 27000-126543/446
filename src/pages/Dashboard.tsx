@@ -1,9 +1,10 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, Thermometer, Activity, Zap, LayoutGrid, CheckCircle2, AlertTriangle, X } from 'lucide-react'
+import { Plus, Thermometer, Activity, Zap, LayoutGrid, CheckCircle2, AlertTriangle, X, Filter, XCircle } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import type { TaskStatus, SimulationTask } from '@/types'
+import { clsx } from 'clsx'
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
   pending_verification: '待校验',
@@ -46,19 +47,33 @@ function metricColor(temp: number, stress: number, emi: number) {
 }
 
 export default function Dashboard() {
-  const { tasks, models, alerts, addTask, setActiveTaskId } = useStore()
+  const { tasks, models, alerts, addTask, setActiveTaskId, filterModelId, setFilterModelId } = useStore()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [showDialog, setShowDialog] = useState(false)
   const [taskName, setTaskName] = useState('')
   const [modelId, setModelId] = useState('')
 
-  const activeTasks = tasks.filter((t) => t.status !== 'completed' && t.status !== 'error_rollback').length
-  const completedTasks = tasks.filter((t) => t.status === 'completed').length
-  const alertCount = alerts.filter((a) => a.status === 'active').length
+  useEffect(() => {
+    const modelIdFromUrl = searchParams.get('modelId')
+    if (modelIdFromUrl && !filterModelId) {
+      setFilterModelId(modelIdFromUrl)
+      const next = new URLSearchParams(searchParams)
+      next.delete('modelId')
+      setSearchParams(next)
+    }
+  }, [searchParams, setSearchParams, setFilterModelId, filterModelId])
+
+  const currentFilterModel = filterModelId ? models.find((m) => m.id === filterModelId) : null
+  const displayTasks = filterModelId ? tasks.filter((t) => t.modelId === filterModelId) : tasks
+
+  const activeTasks = displayTasks.filter((t) => t.status !== 'completed' && t.status !== 'error_rollback').length
+  const completedTasks = displayTasks.filter((t) => t.status === 'completed').length
+  const alertCount = alerts.filter((a) => a.status === 'active' && displayTasks.some((t) => t.id === a.taskId)).length
 
   const dominantStatus = (() => {
     const counts: Partial<Record<TaskStatus, number>> = {}
-    for (const t of tasks) {
+    for (const t of displayTasks) {
       if (t.status !== 'completed' && t.status !== 'error_rollback') {
         counts[t.status] = (counts[t.status] || 0) + 1
       }
@@ -72,7 +87,7 @@ export default function Dashboard() {
   })()
 
   const pipelineIdx = PIPELINE.indexOf(dominantStatus)
-  const hasError = tasks.some((t) => t.status === 'error_rollback')
+  const hasError = displayTasks.some((t) => t.status === 'error_rollback')
 
   function handleCreate() {
     if (!taskName || !modelId) return
@@ -108,8 +123,32 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="section-title">任务总控台</h1>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="section-title">任务总控台</h1>
+          {currentFilterModel && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className={clsx(
+                'flex items-center gap-2 px-3 py-1 rounded-full text-xs',
+                'bg-cyber-blue/15 border border-cyber-blue/40 text-cyber-blue'
+              )}
+            >
+              <Filter className="w-3.5 h-3.5" />
+              <span>型号筛选:</span>
+              <span className="font-medium">{currentFilterModel.name}</span>
+              <span className="text-cyber-dim">({displayTasks.length} 个任务)</span>
+              <button
+                onClick={() => setFilterModelId(null)}
+                className="ml-1 hover:bg-cyber-blue/20 rounded-full p-0.5 transition-colors"
+                title="清除筛选"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+              </button>
+            </motion.div>
+          )}
+        </div>
         <button className="cyber-btn-primary flex items-center gap-2" onClick={() => setShowDialog(true)}>
           <Plus className="w-4 h-4" />新建模拟
         </button>
@@ -117,7 +156,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-4 gap-4">
         {[
-          { label: '总任务数', value: tasks.length, icon: LayoutGrid, color: 'text-cyber-blue' },
+          { label: '总任务数', value: displayTasks.length, icon: LayoutGrid, color: 'text-cyber-blue' },
           { label: '进行中', value: activeTasks, icon: Activity, color: 'text-cyber-purple' },
           { label: '已完成', value: completedTasks, icon: CheckCircle2, color: 'text-cyber-green' },
           { label: '活跃预警', value: alertCount, icon: AlertTriangle, color: 'text-cyber-red' },
@@ -164,8 +203,21 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <AnimatePresence>
-          {tasks.map((task, idx) => {
+        {displayTasks.length === 0 ? (
+          <div className="col-span-3 glass-card p-12 flex flex-col items-center justify-center text-center">
+            <AlertTriangle className="w-12 h-12 text-cyber-dim mb-3" />
+            <p className="text-cyber-dim text-sm mb-2">
+              {filterModelId
+                ? `型号「${currentFilterModel?.name}」暂无模拟任务`
+                : '暂无模拟任务'}
+            </p>
+            <button className="cyber-btn text-xs mt-2" onClick={() => setShowDialog(true)}>
+              立即创建模拟任务
+            </button>
+          </div>
+        ) : (
+          <AnimatePresence>
+            {displayTasks.map((task, idx) => {
             const mc = metricColor(task.junctionTemp, task.equivalentStress, task.emiMargin)
             return (
               <motion.div
@@ -211,7 +263,8 @@ export default function Dashboard() {
               </motion.div>
             )
           })}
-        </AnimatePresence>
+          </AnimatePresence>
+        )}
       </div>
 
       <AnimatePresence>

@@ -2,6 +2,15 @@ import { create } from 'zustand'
 import type { SimulationTask, Alert, Approval, Recommendation, SpacecraftModel, DailyStats, AdjustmentLog, MonitoringData, TaskStatus } from '@/types'
 import { simulationTasks, alerts, approvals, recommendations, spacecraftModels, dailyStats, adjustmentLogs, monitoringData } from '@/data/mockData'
 
+export interface UploadedFile {
+  name: string
+  size: number
+  type: string
+  uploadedAt: string
+}
+
+export type UploadCategory = 'geometry' | 'material' | 'orbit' | 'electronic'
+
 const statusChain: TaskStatus[] = [
   'pending_verification',
   'mesh_generation',
@@ -30,6 +39,8 @@ interface AppStore {
   monitoringData: MonitoringData[]
   activeTaskId: string | null
   sidebarCollapsed: boolean
+  uploadedFiles: Record<string, Record<UploadCategory, UploadedFile[]>>
+  filterModelId: string | null
 
   setActiveTaskId: (id: string | null) => void
   toggleSidebar: () => void
@@ -50,9 +61,14 @@ interface AppStore {
   suspendModel: (modelId: string) => void
   activateModel: (modelId: string) => void
   incrementModelAnomaly: (modelId: string) => void
+  addModel: (model: SpacecraftModel) => void
 
   addTask: (task: SimulationTask) => void
   addMonitoringPoint: (data: MonitoringData) => void
+
+  uploadFile: (taskId: string, category: UploadCategory, file: UploadedFile) => void
+  clearUploadedFiles: (taskId: string, category: UploadCategory) => void
+  setFilterModelId: (modelId: string | null) => void
 }
 
 export const useStore = create<AppStore>((set) => ({
@@ -66,6 +82,8 @@ export const useStore = create<AppStore>((set) => ({
   monitoringData,
   activeTaskId: null,
   sidebarCollapsed: false,
+  uploadedFiles: {},
+  filterModelId: null,
 
   setActiveTaskId: (id) => set({ activeTaskId: id }),
 
@@ -158,4 +176,34 @@ export const useStore = create<AppStore>((set) => ({
 
   addMonitoringPoint: (data) =>
     set((state) => ({ monitoringData: [...state.monitoringData, data] })),
+
+  addModel: (model) =>
+    set((state) => ({ models: [...state.models, model] })),
+
+  uploadFile: (taskId, category, file) =>
+    set((state) => {
+      const taskFiles = state.uploadedFiles[taskId] || { geometry: [], material: [], orbit: [], electronic: [] }
+      return {
+        uploadedFiles: {
+          ...state.uploadedFiles,
+          [taskId]: {
+            ...taskFiles,
+            [category]: [...taskFiles[category], file],
+          },
+        },
+      }
+    }),
+
+  clearUploadedFiles: (taskId, category) =>
+    set((state) => {
+      const taskFiles = state.uploadedFiles[taskId] || { geometry: [], material: [], orbit: [], electronic: [] }
+      return {
+        uploadedFiles: {
+          ...state.uploadedFiles,
+          [taskId]: { ...taskFiles, [category]: [] },
+        },
+      }
+    }),
+
+  setFilterModelId: (modelId) => set({ filterModelId: modelId }),
 }))
