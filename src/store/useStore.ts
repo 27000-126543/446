@@ -3,6 +3,7 @@ import type { SimulationTask, Alert, Approval, Recommendation, SpacecraftModel, 
 import { simulationTasks, alerts, approvals, recommendations, spacecraftModels, dailyStats, adjustmentLogs, monitoringData } from '@/data/mockData'
 
 export interface UploadedFile {
+  id: string
   name: string
   size: number
   type: string
@@ -66,8 +67,8 @@ interface AppStore {
   addTask: (task: SimulationTask) => void
   addMonitoringPoint: (data: Omit<MonitoringData, 'id'>) => void
 
-  uploadFile: (taskId: string, category: UploadCategory, file: UploadedFile) => void
-  removeUploadedFile: (taskId: string, category: UploadCategory, fileName: string) => void
+  uploadFile: (taskId: string, category: UploadCategory, file: Omit<UploadedFile, 'id'>) => void
+  removeUploadedFile: (taskId: string, category: UploadCategory, fileId: string) => void
   clearUploadedFiles: (taskId: string, category: UploadCategory) => void
   setFilterModelId: (modelId: string | null) => void
   updateTaskMetrics: (taskId: string, updates: Partial<{ junctionTemp: number; equivalentStress: number; emiMargin: number; progress: number; status: TaskStatus; lifeYears: number }>) => void
@@ -194,18 +195,22 @@ export const useStore = create<AppStore>((set) => ({
   uploadFile: (taskId, category, file) =>
     set((state) => {
       const taskFiles = state.uploadedFiles[taskId] || { geometry: [], material: [], orbit: [], electronic: [] }
+      const newFile: UploadedFile = {
+        id: `file-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+        ...file,
+      }
       return {
         uploadedFiles: {
           ...state.uploadedFiles,
           [taskId]: {
             ...taskFiles,
-            [category]: [...taskFiles[category], file],
+            [category]: [...taskFiles[category], newFile],
           },
         },
       }
     }),
 
-  removeUploadedFile: (taskId, category, fileName) =>
+  removeUploadedFile: (taskId, category, fileId) =>
     set((state) => {
       const taskFiles = state.uploadedFiles[taskId] || { geometry: [], material: [], orbit: [], electronic: [] }
       return {
@@ -213,7 +218,7 @@ export const useStore = create<AppStore>((set) => ({
           ...state.uploadedFiles,
           [taskId]: {
             ...taskFiles,
-            [category]: taskFiles[category].filter((f) => f.name !== fileName),
+            [category]: taskFiles[category].filter((f) => f.id !== fileId),
           },
         },
       }

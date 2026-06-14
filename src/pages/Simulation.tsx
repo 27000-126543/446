@@ -204,9 +204,9 @@ function UploadZone({
 
       {isReady && (
         <div className="space-y-1.5 mt-1 flex-1">
-          {files.map((f, idx) => (
+          {files.map((f) => (
             <div
-              key={`${f.name}-${idx}`}
+              key={f.id}
               className="flex items-center gap-2 text-xs bg-deep-800/60 rounded px-2 py-1.5 group"
             >
               <FileIcon className="w-3.5 h-3.5 text-cyber-blue shrink-0" />
@@ -218,7 +218,7 @@ function UploadZone({
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  removeUploadedFile(taskId, category, f.name)
+                  removeUploadedFile(taskId, category, f.id)
                 }}
                 className="text-cyber-dim hover:text-cyber-red shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                 title={`删除 ${f.name}`}
@@ -434,61 +434,6 @@ export default function Simulation() {
 
       const totalProgress = Math.min(100, Math.round((step / totalSteps) * 100))
 
-      if (task.modelName.includes('火星') && stageIdx >= 2 && stageFrac > 0.6) {
-        // 火星沙尘暴工况有概率触发热越限
-        if (Math.random() < 0.3 && stageIdx === 2 && temp > 88) {
-          clearInterval(interval)
-          setSimulating(false)
-          setSimError(`热求解阶段异常：结温 ${temp.toFixed(1)}°C 超过阈值 85°C`)
-          updateTaskStatus(id, 'error_rollback')
-          addAlert({
-            taskId: id,
-            modelId: task.modelId,
-            modelName: task.modelName,
-            type: 'temperature',
-            level: 'critical',
-            message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发热越限，结温 ${temp.toFixed(1)}°C 超过阈值 85°C，已自动回退。`,
-          })
-          return
-        }
-      }
-
-      if (task.modelName.includes('嫦娥') && stageIdx >= 3 && stageFrac > 0.5) {
-        if (Math.random() < 0.25 && stageIdx === 3 && stress > 255) {
-          clearInterval(interval)
-          setSimulating(false)
-          setSimError(`应力分析阶段异常：等效应力 ${stress.toFixed(1)}MPa 超过阈值 250MPa`)
-          updateTaskStatus(id, 'error_rollback')
-          addAlert({
-            taskId: id,
-            modelId: task.modelId,
-            modelName: task.modelName,
-            type: 'stress',
-            level: 'critical',
-            message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发应力越限，等效应力 ${stress.toFixed(1)}MPa 超过阈值 250MPa，已自动回退。`,
-          })
-          return
-        }
-      }
-
-      if (task.modelName.includes('木星') && stageIdx >= 4 && stageFrac > 0.4) {
-        if (Math.random() < 0.35 && emi < 7) {
-          clearInterval(interval)
-          setSimulating(false)
-          setSimError(`电磁兼容评估异常：EMI 裕度 ${emi.toFixed(1)}dB 低于阈值 6dB`)
-          updateTaskStatus(id, 'error_rollback')
-          addAlert({
-            taskId: id,
-            modelId: task.modelId,
-            modelName: task.modelName,
-            type: 'emi',
-            level: 'critical',
-            message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发 EMI 越限，裕度 ${emi.toFixed(1)}dB 低于阈值 6dB，已自动回退。`,
-          })
-          return
-        }
-      }
-
       updateTaskMetrics(id, {
         junctionTemp: +temp.toFixed(1),
         equivalentStress: +stress.toFixed(1),
@@ -504,35 +449,77 @@ export default function Simulation() {
         emiMargin: +emi.toFixed(1),
       })
 
-      if (temp > 85 && stageIdx >= 2) {
+      if (temp > 85) {
+        clearInterval(interval)
+        setSimulating(false)
+        const exceedC = temp - 85
+        setSimError(`${STATUS_LABELS[stage.status]}阶段异常：结温 ${temp.toFixed(1)}°C 超过阈值 85°C（超出 ${exceedC.toFixed(1)}°C）`)
+        updateTaskStatus(id, 'error_rollback')
+        updateTaskMetrics(id, {
+          junctionTemp: +temp.toFixed(1),
+          equivalentStress: +stress.toFixed(1),
+          emiMargin: +emi.toFixed(1),
+          progress: totalProgress,
+        })
         addAlert({
           taskId: id,
           modelId: task.modelId,
           modelName: task.modelName,
           type: 'temperature',
-          level: 'warning',
-          message: `结温预警 ${temp.toFixed(1)}°C (阈值 85°C)，当前阶段 ${STATUS_LABELS[stage.status]}。`,
+          level: 'critical',
+          thresholdValue: 85,
+          actualValue: +temp.toFixed(1),
+          message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发热越限，结温 ${temp.toFixed(1)}°C 超过阈值 85°C，任务已自动回退并停止。`,
         })
+        return
       }
-      if (stress > 250 && stageIdx >= 3) {
+      if (stress > 250) {
+        clearInterval(interval)
+        setSimulating(false)
+        const exceedS = stress - 250
+        setSimError(`${STATUS_LABELS[stage.status]}阶段异常：等效应力 ${stress.toFixed(1)}MPa 超过阈值 250MPa（超出 ${exceedS.toFixed(1)}MPa）`)
+        updateTaskStatus(id, 'error_rollback')
+        updateTaskMetrics(id, {
+          junctionTemp: +temp.toFixed(1),
+          equivalentStress: +stress.toFixed(1),
+          emiMargin: +emi.toFixed(1),
+          progress: totalProgress,
+        })
         addAlert({
           taskId: id,
           modelId: task.modelId,
           modelName: task.modelName,
           type: 'stress',
-          level: 'warning',
-          message: `应力预警 ${stress.toFixed(1)}MPa (阈值 250MPa)，当前阶段 ${STATUS_LABELS[stage.status]}。`,
+          level: 'critical',
+          thresholdValue: 250,
+          actualValue: +stress.toFixed(1),
+          message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发应力越限，等效应力 ${stress.toFixed(1)}MPa 超过阈值 250MPa，任务已自动回退并停止。`,
         })
+        return
       }
-      if (emi < 6 && stageIdx >= 4) {
+      if (emi < 6) {
+        clearInterval(interval)
+        setSimulating(false)
+        const belowE = 6 - emi
+        setSimError(`${STATUS_LABELS[stage.status]}阶段异常：EMI 裕度 ${emi.toFixed(1)}dB 低于阈值 6dB（差 ${belowE.toFixed(1)}dB）`)
+        updateTaskStatus(id, 'error_rollback')
+        updateTaskMetrics(id, {
+          junctionTemp: +temp.toFixed(1),
+          equivalentStress: +stress.toFixed(1),
+          emiMargin: +emi.toFixed(1),
+          progress: totalProgress,
+        })
         addAlert({
           taskId: id,
           modelId: task.modelId,
           modelName: task.modelName,
           type: 'emi',
-          level: 'warning',
-          message: `EMI 裕度预警 ${emi.toFixed(1)}dB (阈值 6dB)，当前阶段 ${STATUS_LABELS[stage.status]}。`,
+          level: 'critical',
+          thresholdValue: 6,
+          actualValue: +emi.toFixed(1),
+          message: `模拟任务在「${STATUS_LABELS[stage.status]}」阶段触发 EMI 越限，裕度 ${emi.toFixed(1)}dB 低于阈值 6dB，任务已自动回退并停止。`,
         })
+        return
       }
 
       if (stageProgress >= stage.duration && stageIdx < stages.length - 1) {

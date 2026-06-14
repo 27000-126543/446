@@ -94,28 +94,48 @@ function genAgingCurves(seed: string, scale: number) {
   return { cycles, thermal, mechanical, electrical }
 }
 
-function genLifePredictionCurves(seed: string, orbitScale: number, powerScale: number, bandScale: number) {
+function genLifePredictionCurves(seed: string, orbitAgingScale: number, powerAgingScale: number, bandEmiScale: number, bandFreqRef: number) {
   const rand = seededRandom(hashCode(seed) ^ 0xd3b7a43)
   const baseLife = 12
 
+  // 热循环次数 - 寿命曲线：循环越多 → 热疲劳积累 → 寿命越短（Arrhenius + Coffin-Manson 模型）
+  // 工程直觉：从 0 次到 1000 次，寿命应从 12 年衰减到约 2-3 年
   const cycleCounts = Array.from({ length: 20 }, (_, i) => (i + 1) * 50)
   const lifeByCycles = cycleCounts.map((n) => {
-    const degradation = 1 - (n / 1000) * 0.35 * orbitScale
-    return +Math.max(0.5, baseLife * Math.exp(-degradation * 1.5)).toFixed(2)
+    // n 越大 → degradationFactor 越大 → 寿命越短
+    const degradationFactor = (n / 1000) * 1.8 * orbitAgingScale
+    const life = baseLife * Math.exp(-degradationFactor)
+    return +Math.max(0.5, life + (rand() - 0.5) * 0.2).toFixed(2)
   })
 
+  // 功率档位 - 寿命曲线：功率越高 → 焦耳热 + 电应力 → 寿命按幂律衰减
+  // 工程直觉：20% 额定功率约 20+ 年，160% 功率约 2-3 年
   const powerLevels = [0.2, 0.4, 0.6, 0.75, 0.9, 1.0, 1.15, 1.3, 1.45, 1.6]
   const lifeByPower = powerLevels.map((p) => {
-    const factor = Math.pow(p, 1.8) * powerScale
-    return +Math.max(0.5, baseLife / Math.max(0.3, factor)).toFixed(2)
+    // p 越大 → factor 越大 → 寿命越短（幂律指数 2.2，符合电子器件老化规律）
+    const factor = Math.pow(p * 1.05, 2.2) * powerAgingScale
+    const life = baseLife / Math.max(0.25, factor)
+    return +Math.max(0.5, life + (rand() - 0.5) * 0.15).toFixed(2)
   })
 
+  // 通信频段 - 寿命曲线：频率越高 → 趋肤效应 + EMI 应力 + 介质损耗 → 寿命越短
+  // 工程直觉：VHF(0.3GHz) 约 15 年，W 频段(75GHz) 约 3-4 年
   const bands = ['VHF', 'S', 'X', 'Ku', 'Ka', 'Q', 'W']
   const freqs = [0.3, 2.5, 10, 18, 35, 50, 75]
   const lifeByBand = freqs.map((f) => {
-    const emiStress = Math.log10(f + 1) * 0.15 * bandScale
-    return +Math.max(0.5, baseLife * (1 - emiStress * 0.6)).toFixed(2)
+    // f 越大 → emiStress 越大 → 寿命越短
+    // bandEmiScale: 1.0 为基线；<1.0 表示 EMI 裕度大 → 寿命长；>1.0 表示 EMI 裕度小 → 寿命短
+    const freqFactor = Math.log10(f + 1) * 0.35
+    const emiStress = freqFactor * (1 / bandEmiScale)
+    const life = baseLife * Math.max(0.25, 1 - emiStress * 0.55)
+    return +Math.max(0.5, life + (rand() - 0.5) * 0.1).toFixed(2)
   })
+
+  // 综合预测寿命：综合轨道老化 × 功率老化 × 频段 EMI 应力
+  // orbitAgingScale: 越大老化越快寿命越短；powerAgingScale: 越大老化越快寿命越短
+  // bandEmiScale: 越小（裕度低）寿命越短，所以用 1/bandEmiScale
+  const compositeFactor = orbitAgingScale * powerAgingScale * (bandFreqRef <= 1 ? 1 / Math.max(0.4, bandEmiScale) : 1 / bandEmiScale * 0.9 + 0.1)
+  const estimatedLife = Math.max(0.5, baseLife / Math.max(0.3, compositeFactor))
 
   return {
     cycleCounts,
@@ -125,8 +145,11 @@ function genLifePredictionCurves(seed: string, orbitScale: number, powerScale: n
     bandNames: bands,
     bandFreqs: freqs,
     lifeByBand,
-    estimatedLifeYears: +(baseLife * orbitScale * (1 / powerScale) * bandScale).toFixed(2),
-    meanTimeToFailure: +(baseLife * 8760 * orbitScale * (1 / powerScale) * bandScale).toFixed(0),
+    estimatedLifeYears: +estimatedLife.toFixed(2),
+    meanTimeToFailure: +(estimatedLife * 8760).toFixed(0),
+    cycleLifeAt500: lifeByCycles[9] ?? lifeByCycles[lifeByCycles.length - 1],
+    powerLifeAt100: lifeByPower[5] ?? lifeByPower[lifeByPower.length - 1],
+    bandLifeMid: lifeByBand[3] ?? lifeByBand[lifeByBand.length - 1],
   }
 }
 
@@ -231,8 +254,9 @@ export default function Reports() {
       orbitScale.aging,
       powerScale.aging,
       bandScale.emiMargin,
+      parseFloat(bandScale.freqGHz) || 10,
     ),
-    [seedKey, orbitScale.aging, powerScale.aging, bandScale.emiMargin],
+    [seedKey, orbitScale.aging, powerScale.aging, bandScale.emiMargin, bandScale.freqGHz],
   )
 
   // 第二组筛选数据（对比模式）
@@ -269,22 +293,40 @@ export default function Reports() {
     () => task ? deriveMetrics(task, orbitPhase2, commBand2, powerLevel2) : null,
     [task, orbitPhase2, commBand2, powerLevel2],
   )
+  const lifePrediction2 = useMemo(
+    () => genLifePredictionCurves(
+      seedKey2 + ':L',
+      orbitScale2.aging,
+      powerScale2.aging,
+      bandScale2.emiMargin,
+      parseFloat(bandScale2.freqGHz) || 10,
+    ),
+    [seedKey2, orbitScale2.aging, powerScale2.aging, bandScale2.emiMargin, bandScale2.freqGHz],
+  )
 
-  // 差异计算
+  // 差异计算 - 含寿命摘要（问题2）
   const diffMetrics = useMemo(() => {
     if (!metrics || !metrics2) return null
     const calcDiff = (v1: number, v2: number) => ({
       value: +(v2 - v1).toFixed(2),
       percent: +(((v2 - v1) / Math.max(0.001, v1)) * 100).toFixed(1),
     })
+    const lifeDiff = {
+      estimatedLifeYears: calcDiff(lifePrediction.estimatedLifeYears, lifePrediction2.estimatedLifeYears),
+      meanTimeToFailure: calcDiff(lifePrediction.meanTimeToFailure, lifePrediction2.meanTimeToFailure),
+      cycleLifeAt500: calcDiff(lifePrediction.cycleLifeAt500, lifePrediction2.cycleLifeAt500),
+      powerLifeAt100: calcDiff(lifePrediction.powerLifeAt100, lifePrediction2.powerLifeAt100),
+      bandLifeMid: calcDiff(lifePrediction.bandLifeMid, lifePrediction2.bandLifeMid),
+    }
     return {
       junctionTemp: calcDiff(metrics.junctionTemp, metrics2.junctionTemp),
       equivalentStress: calcDiff(metrics.equivalentStress, metrics2.equivalentStress),
       emiMargin: calcDiff(metrics.emiMargin, metrics2.emiMargin),
       heatFluxPeak: calcDiff(metrics.heatFluxPeak, metrics2.heatFluxPeak),
       solarCellDegradation: calcDiff(metrics.solarCellDegradation, metrics2.solarCellDegradation),
+      ...lifeDiff,
     }
-  }, [metrics, metrics2])
+  }, [metrics, metrics2, lifePrediction, lifePrediction2])
 
   const tempOption = useMemo(() => ({
     tooltip: { position: 'top' },
@@ -824,6 +866,9 @@ export default function Reports() {
         lines.push('# Life Prediction (寿命预测)')
         lines.push(`Estimated Life (years),${lifePrediction.estimatedLifeYears}`)
         lines.push(`MTTF (hours),${lifePrediction.meanTimeToFailure}`)
+        lines.push(`Life at 500 Thermal Cycles (years),${lifePrediction.cycleLifeAt500}`)
+        lines.push(`Life at 100% Power (years),${lifePrediction.powerLifeAt100}`)
+        lines.push(`Life at Mid-Band (Ku, years),${lifePrediction.bandLifeMid}`)
         lines.push(`Base Life (years),12`)
         lines.push(`Orbit Aging Factor,${orbitScale.aging.toFixed(3)}`)
         lines.push(`Power Aging Factor,${powerScale.aging.toFixed(3)}`)
@@ -883,6 +928,9 @@ export default function Reports() {
         lines.push('% Life prediction')
         lines.push(`life.estimated_years=${lifePrediction.estimatedLifeYears};`)
         lines.push(`life.mttf_hours=${lifePrediction.meanTimeToFailure};`)
+        lines.push(`life.life_at_500_cycles=${lifePrediction.cycleLifeAt500};`)
+        lines.push(`life.life_at_100pct_power=${lifePrediction.powerLifeAt100};`)
+        lines.push(`life.life_mid_band=${lifePrediction.bandLifeMid};`)
         lines.push(`life.base_years=12;`)
         lines.push(`life.orbit_aging_factor=${orbitScale.aging};`)
         lines.push(`life.power_aging_factor=${powerScale.aging};`)
@@ -939,6 +987,19 @@ export default function Reports() {
                 peakHeatFlux: metrics.heatFluxPeak,
                 solarCellDegradation: metrics.solarCellDegradation,
               },
+              lifePrediction: {
+                estimatedLifeYears: lifePrediction.estimatedLifeYears,
+                meanTimeToFailureHours: lifePrediction.meanTimeToFailure,
+                cycleLifeAt500Cycles: lifePrediction.cycleLifeAt500,
+                powerLifeAt100Percent: lifePrediction.powerLifeAt100,
+                bandLifeMid: lifePrediction.bandLifeMid,
+                cycleCountSeries: lifePrediction.cycleCounts,
+                lifeByCycleSeries: lifePrediction.lifeByCycles,
+                powerLevelSeries: lifePrediction.powerLevels,
+                lifeByPowerSeries: lifePrediction.lifeByPower,
+                bandNameSeries: lifePrediction.bandNames,
+                lifeByBandSeries: lifePrediction.lifeByBand,
+              },
             },
             groupB: {
               label: '工况B',
@@ -951,6 +1012,19 @@ export default function Reports() {
                 peakHeatFlux: metrics2.heatFluxPeak,
                 solarCellDegradation: metrics2.solarCellDegradation,
               },
+              lifePrediction: {
+                estimatedLifeYears: lifePrediction2.estimatedLifeYears,
+                meanTimeToFailureHours: lifePrediction2.meanTimeToFailure,
+                cycleLifeAt500Cycles: lifePrediction2.cycleLifeAt500,
+                powerLifeAt100Percent: lifePrediction2.powerLifeAt100,
+                bandLifeMid: lifePrediction2.bandLifeMid,
+                cycleCountSeries: lifePrediction2.cycleCounts,
+                lifeByCycleSeries: lifePrediction2.lifeByCycles,
+                powerLevelSeries: lifePrediction2.powerLevels,
+                lifeByPowerSeries: lifePrediction2.lifeByPower,
+                bandNameSeries: lifePrediction2.bandNames,
+                lifeByBandSeries: lifePrediction2.lifeByBand,
+              },
             },
             difference: {
               junctionTemp: { delta: diffMetrics.junctionTemp.value, percent: diffMetrics.junctionTemp.percent },
@@ -958,6 +1032,11 @@ export default function Reports() {
               emiMargin: { delta: diffMetrics.emiMargin.value, percent: diffMetrics.emiMargin.percent },
               peakHeatFlux: { delta: diffMetrics.heatFluxPeak.value, percent: diffMetrics.heatFluxPeak.percent },
               solarCellDegradation: { delta: diffMetrics.solarCellDegradation.value, percent: diffMetrics.solarCellDegradation.percent },
+              estimatedLifeYears: { delta: diffMetrics.estimatedLifeYears.value, percent: diffMetrics.estimatedLifeYears.percent },
+              meanTimeToFailureHours: { delta: diffMetrics.meanTimeToFailure.value, percent: diffMetrics.meanTimeToFailure.percent },
+              cycleLifeAt500Cycles: { delta: diffMetrics.cycleLifeAt500.value, percent: diffMetrics.cycleLifeAt500.percent },
+              powerLifeAt100Percent: { delta: diffMetrics.powerLifeAt100.value, percent: diffMetrics.powerLifeAt100.percent },
+              bandLifeMid: { delta: diffMetrics.bandLifeMid.value, percent: diffMetrics.bandLifeMid.percent },
             },
             crosstalkComparison: SUBSYSTEMS.map((row) =>
               SUBSYSTEMS.map((col) => ({
@@ -995,6 +1074,41 @@ export default function Reports() {
         lines.push(`EMI裕度(dB),${metrics.emiMargin},${metrics2.emiMargin},${diffMetrics.emiMargin.value > 0 ? '+' : ''}${diffMetrics.emiMargin.value},${diffMetrics.emiMargin.percent > 0 ? '+' : ''}${diffMetrics.emiMargin.percent}%`)
         lines.push(`峰值热流(W/m2),${metrics.heatFluxPeak},${metrics2.heatFluxPeak},${diffMetrics.heatFluxPeak.value > 0 ? '+' : ''}${diffMetrics.heatFluxPeak.value},${diffMetrics.heatFluxPeak.percent > 0 ? '+' : ''}${diffMetrics.heatFluxPeak.percent}%`)
         lines.push(`太阳能电池退化(%),${metrics.solarCellDegradation},${metrics2.solarCellDegradation},${diffMetrics.solarCellDegradation.value > 0 ? '+' : ''}${diffMetrics.solarCellDegradation.value},${diffMetrics.solarCellDegradation.percent > 0 ? '+' : ''}${diffMetrics.solarCellDegradation.percent}%`)
+        lines.push('')
+        lines.push('## 寿命摘要对比 (B - A)')
+        lines.push('指标,工况A,工况B,差值,增减百分比')
+        lines.push(`预测寿命(年),${lifePrediction.estimatedLifeYears},${lifePrediction2.estimatedLifeYears},${diffMetrics.estimatedLifeYears.value > 0 ? '+' : ''}${diffMetrics.estimatedLifeYears.value},${diffMetrics.estimatedLifeYears.percent > 0 ? '+' : ''}${diffMetrics.estimatedLifeYears.percent}%`)
+        lines.push(`MTTF(小时),${lifePrediction.meanTimeToFailure},${lifePrediction2.meanTimeToFailure},${diffMetrics.meanTimeToFailure.value > 0 ? '+' : ''}${diffMetrics.meanTimeToFailure.value},${diffMetrics.meanTimeToFailure.percent > 0 ? '+' : ''}${diffMetrics.meanTimeToFailure.percent}%`)
+        lines.push(`500次热循环寿命(年),${lifePrediction.cycleLifeAt500},${lifePrediction2.cycleLifeAt500},${diffMetrics.cycleLifeAt500.value > 0 ? '+' : ''}${diffMetrics.cycleLifeAt500.value},${diffMetrics.cycleLifeAt500.percent > 0 ? '+' : ''}${diffMetrics.cycleLifeAt500.percent}%`)
+        lines.push(`100%功率寿命(年),${lifePrediction.powerLifeAt100},${lifePrediction2.powerLifeAt100},${diffMetrics.powerLifeAt100.value > 0 ? '+' : ''}${diffMetrics.powerLifeAt100.value},${diffMetrics.powerLifeAt100.percent > 0 ? '+' : ''}${diffMetrics.powerLifeAt100.percent}%`)
+        lines.push(`中频段寿命(年),${lifePrediction.bandLifeMid},${lifePrediction2.bandLifeMid},${diffMetrics.bandLifeMid.value > 0 ? '+' : ''}${diffMetrics.bandLifeMid.value},${diffMetrics.bandLifeMid.percent > 0 ? '+' : ''}${diffMetrics.bandLifeMid.percent}%`)
+        lines.push('')
+        lines.push('## 热循环寿命曲线对比')
+        lines.push(`循环次数,工况A寿命(年),工况B寿命(年),差值(B-A)`)
+        lifePrediction.cycleCounts.forEach((cc, idx) => {
+          const la = lifePrediction.lifeByCycles[idx]
+          const lb = lifePrediction2.lifeByCycles[idx]
+          const d = +(lb - la).toFixed(2)
+          lines.push(`${cc},${la},${lb},${d > 0 ? '+' : ''}${d}`)
+        })
+        lines.push('')
+        lines.push('## 功率档位寿命曲线对比')
+        lines.push(`功率档位(%),工况A寿命(年),工况B寿命(年),差值(B-A)`)
+        lifePrediction.powerLevels.forEach((pl, idx) => {
+          const la = lifePrediction.lifeByPower[idx]
+          const lb = lifePrediction2.lifeByPower[idx]
+          const d = +(lb - la).toFixed(2)
+          lines.push(`${pl},${la},${lb},${d > 0 ? '+' : ''}${d}`)
+        })
+        lines.push('')
+        lines.push('## 通信频段寿命对比')
+        lines.push(`频段,频率(GHz),工况A寿命(年),工况B寿命(年),差值(B-A)`)
+        lifePrediction.bandNames.forEach((bn, idx) => {
+          const la = lifePrediction.lifeByBand[idx]
+          const lb = lifePrediction2.lifeByBand[idx]
+          const d = +(lb - la).toFixed(2)
+          lines.push(`${bn},${lifePrediction.bandFreqs[idx]},${la},${lb},${d > 0 ? '+' : ''}${d}`)
+        })
         lines.push('')
         lines.push('## 串扰矩阵对比 (B - A)')
         lines.push(`子系统对,工况A,工况B,差值`)
@@ -1234,11 +1348,18 @@ export default function Reports() {
                 </div>
                 {metrics && (
                   <div className="pt-2 border-t border-deep-500/50 space-y-1.5 text-[11px]">
+                    <div className="text-[10px] text-cyber-blue/80 font-medium pt-1">核心指标</div>
                     <div className="flex justify-between"><span className="text-cyber-dim">结温</span><span className="text-cyber-white font-mono">{metrics.junctionTemp}°C</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">应力</span><span className="text-cyber-white font-mono">{metrics.equivalentStress}MPa</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">EMI裕度</span><span className="text-cyber-white font-mono">{metrics.emiMargin}dB</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">热流峰值</span><span className="text-cyber-white font-mono">{metrics.heatFluxPeak}W/m²</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">退化率</span><span className="text-cyber-white font-mono">{metrics.solarCellDegradation}%</span></div>
+                    <div className="text-[10px] text-cyber-green/80 font-medium pt-2">寿命摘要</div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">预测寿命</span><span className="text-cyber-white font-mono">{lifePrediction.estimatedLifeYears}年</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">MTTF</span><span className="text-cyber-white font-mono">{(lifePrediction.meanTimeToFailure / 1000).toFixed(1)}k小时</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">500次热循环寿命</span><span className="text-cyber-white font-mono">{lifePrediction.cycleLifeAt500}年</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">100%功率寿命</span><span className="text-cyber-white font-mono">{lifePrediction.powerLifeAt100}年</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">中频段寿命</span><span className="text-cyber-white font-mono">{lifePrediction.bandLifeMid}年</span></div>
                   </div>
                 )}
               </div>
@@ -1281,6 +1402,45 @@ export default function Reports() {
                         </div>
                       )
                     })}
+                    <div className="pt-2 mt-1 border-t border-deep-500/40 space-y-2">
+                      <div className="text-[10px] text-cyber-purple font-medium">寿命差异 (B - A)</div>
+                      {[
+                        { label: '预测寿命', diff: diffMetrics.estimatedLifeYears, unit: '年' },
+                        { label: 'MTTF', diff: diffMetrics.meanTimeToFailure, unit: 'h', factor: 1 },
+                        { label: '500次循环寿命', diff: diffMetrics.cycleLifeAt500, unit: '年' },
+                        { label: '100%功率寿命', diff: diffMetrics.powerLifeAt100, unit: '年' },
+                        { label: '中频段寿命', diff: diffMetrics.bandLifeMid, unit: '年' },
+                      ].map((item) => {
+                        const isPositive = item.diff.percent > 0
+                        const isZero = Math.abs(item.diff.percent) < 0.1
+                        const displayVal = item.label === 'MTTF'
+                          ? `${isPositive ? '+' : ''}${(item.diff.value / 1000).toFixed(1)}k`
+                          : `${isPositive ? '+' : ''}${item.diff.value.toFixed(2)}`
+                        return (
+                          <div key={item.label} className="flex items-center justify-between text-[11px] py-1 px-2 bg-cyber-green/5 rounded border border-cyber-green/10">
+                            <span className="text-cyber-dim">{item.label}</span>
+                            <div className="flex items-center gap-1">
+                              {isZero ? (
+                                <Minus className="w-3 h-3 text-cyber-dim" />
+                              ) : isPositive ? (
+                                <TrendingUp className="w-3 h-3 text-cyber-green" />
+                              ) : (
+                                <TrendingDown className="w-3 h-3 text-cyber-red" />
+                              )}
+                              <span className={clsx(
+                                'font-mono font-semibold',
+                                isZero ? 'text-cyber-dim' : isPositive ? 'text-cyber-green' : 'text-cyber-red'
+                              )}>
+                                {displayVal}{item.label === 'MTTF' ? 'h' : item.unit}
+                                <span className="text-[10px] ml-1 opacity-80">
+                                  ({isPositive ? '+' : ''}{item.diff.percent.toFixed(1)}%)
+                                </span>
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1325,11 +1485,18 @@ export default function Reports() {
                 </div>
                 {metrics2 && (
                   <div className="pt-2 border-t border-deep-500/50 space-y-1.5 text-[11px]">
+                    <div className="text-[10px] text-cyber-purple/80 font-medium pt-1">核心指标</div>
                     <div className="flex justify-between"><span className="text-cyber-dim">结温</span><span className="text-cyber-white font-mono">{metrics2.junctionTemp}°C</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">应力</span><span className="text-cyber-white font-mono">{metrics2.equivalentStress}MPa</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">EMI裕度</span><span className="text-cyber-white font-mono">{metrics2.emiMargin}dB</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">热流峰值</span><span className="text-cyber-white font-mono">{metrics2.heatFluxPeak}W/m²</span></div>
                     <div className="flex justify-between"><span className="text-cyber-dim">退化率</span><span className="text-cyber-white font-mono">{metrics2.solarCellDegradation}%</span></div>
+                    <div className="text-[10px] text-cyber-green/80 font-medium pt-2">寿命摘要</div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">预测寿命</span><span className="text-cyber-white font-mono">{lifePrediction2.estimatedLifeYears}年</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">MTTF</span><span className="text-cyber-white font-mono">{(lifePrediction2.meanTimeToFailure / 1000).toFixed(1)}k小时</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">500次热循环寿命</span><span className="text-cyber-white font-mono">{lifePrediction2.cycleLifeAt500}年</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">100%功率寿命</span><span className="text-cyber-white font-mono">{lifePrediction2.powerLifeAt100}年</span></div>
+                    <div className="flex justify-between"><span className="text-cyber-dim">中频段寿命</span><span className="text-cyber-white font-mono">{lifePrediction2.bandLifeMid}年</span></div>
                   </div>
                 )}
               </div>
